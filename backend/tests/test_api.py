@@ -167,3 +167,48 @@ def test_dashboard_and_activity():
     dashboard=client.get("/api/dashboard").json()
     assert dashboard["total_students"] == 1 and dashboard["active_students"] == 1
     assert any(row["action"]=="Student created" for row in client.get("/api/activity").json())
+
+
+def test_self_service_signup_and_bulk_course_registration():
+    student=client.post("/api/students",json=student_payload("DE/2023/0101")).json()
+    with main.connect() as db:
+        department_id=db.execute("SELECT id FROM departments WHERE code='CPE'").fetchone()["id"]
+        session_id=db.execute("INSERT INTO academic_sessions (name,is_current) VALUES ('2026/2027',TRUE) RETURNING id").fetchone()["id"]
+        semester_id=db.execute("INSERT INTO semesters (academic_session_id,name,is_published) VALUES (%s,'First Semester',TRUE) RETURNING id",(session_id,)).fetchone()["id"]
+    lecturer=client.post("/api/admin/lecturers",json={"staff_number":"STAFF-SELF-001","first_name":"Ada","last_name":"Okoro","department_id":department_id}).json()
+    course_ids=[]
+    for code in ("CPE301","CPE302","CPE303"):
+        course=client.post("/api/admin/courses",json={"department_id":department_id,"course_code":code,"title":code+" Course","credit_units":3,"level":"300"}).json()
+        offering=client.post("/api/admin/course-offerings",json={"course_id":course["id"],"semester_id":semester_id,"section":"A","lecturer_id":lecturer["id"],"capacity":40})
+        assert offering.status_code==201
+        course_ids.append(offering.json()["id"])
+    signup=client.post("/api/auth/signup",json={"email":"student@example.edu","password":"student-password-123","role":"Student","identity_number":"DE/2023/0101"})
+    assert signup.status_code==201 and signup.json()["role"]=="Student"
+    bulk=client.post("/api/student/course-offerings/register",json={"course_offering_ids":course_ids})
+    assert bulk.status_code==200 and bulk.json()["registered"]==3
+    assert len(client.get("/api/student/registrations").json())==3
+    assert client.post("/api/student/course-offerings/register",json={"course_offering_ids":[course_ids[0],course_ids[0]]}).status_code==422
+    client.post("/api/auth/logout")
+    lecturer_signup=client.post("/api/auth/signup",json={"email":"lecturer@example.edu","password":"lecturer-password-123","role":"Lecturer","identity_number":"STAFF-SELF-001"})
+    assert lecturer_signup.status_code==201 and lecturer_signup.json()["role"]=="Lecturer"
+    assert len(client.get("/api/course-offerings").json())==3
+
+
+def test_self_service_signup_requires_admin_created_academic_record():
+    response=client.post("/api/auth/signup",json={"email":"unknown@example.edu","password":"student-password-123","role":"Student","identity_number":"DE/2099/9999"})
+    assert response.status_code==404
+
+
+def test_public_demo_administrator_is_read_only(monkeypatch):
+    monkeypatch.setenv("CAMPUSBOOK_DEMO_ADMIN_ENABLED","true")
+    with main.connect() as db:
+        db.execute(
+            "INSERT INTO user_accounts (username,password_hash,role) VALUES ('demo.admin',%s,'Administrator')",
+            (main.PASSWORD_HASHER.hash("demo-admin-password-123"),)
+        )
+    demo=client.post("/api/auth/demo-admin")
+    assert demo.status_code==200 and demo.json()["username"]=="demo.admin"
+    assert client.get("/api/dashboard").status_code==200
+    blocked=client.post("/api/students",json=student_payload("DE/2023/0999"))
+    assert blocked.status_code==403 and "read-only" in blocked.json()["detail"].lower()
+    assert client.post("/api/auth/logout").status_code==200

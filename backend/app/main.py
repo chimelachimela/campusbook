@@ -62,6 +62,16 @@ class LoginInput(BaseModel):
     username: str = Field(min_length=3, max_length=80)
     password: str = Field(min_length=1, max_length=200)
 
+class SignupInput(BaseModel):
+    email: str = Field(min_length=6,max_length=160,pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    password: str = Field(min_length=8,max_length=200)
+    role: str = Field(pattern="^(Student|Lecturer)$")
+    identity_number: str = Field(min_length=2,max_length=40)
+
+
+class BulkCourseRegistrationInput(BaseModel):
+    course_offering_ids: list[int] = Field(min_length=1,max_length=100)
+
 
 class BootstrapInput(BaseModel):
     username: str = Field(min_length=3, max_length=80)
@@ -615,6 +625,72 @@ def login(payload:LoginInput,response:Response):
     return {k:user[k] for k in ("id","username","role","student_id","lecturer_id")}
 
 
+@app.post("/api/auth/signup",status_code=201)
+def signup(payload:SignupInput,response:Response):
+    email=payload.email.strip().lower()
+    identity=payload.identity_number.strip()
+    with connect() as db:
+        if payload.role=="Student":
+            record=db.execute("SELECT id FROM students WHERE UPPER(matric_number)=UPPER(%s) AND status='Active'",(identity,)).fetchone()
+            if not record: raise HTTPException(status_code=404,detail="No active student record matches that matriculation number. Ask the administrator to create your student record first.")
+            student_id=record["id"]; lecturer_id=None
+        else:
+            record=db.execute("SELECT id FROM lecturers WHERE UPPER(staff_number)=UPPER(%s) AND status='Active'",(identity,)).fetchone()
+            if not record: raise HTTPException(status_code=404,detail="No active lecturer record matches that staff number. Ask the administrator to create your lecturer profile and assign your department first.")
+            lecturer_id=record["id"]; student_id=None
+        try:
+            account=db.execute(
+                "INSERT INTO user_accounts (username,password_hash,role,student_id,lecturer_id) VALUES (%s,%s,%s,%s,%s) RETURNING id,username,role,student_id,lecturer_id",
+                (email,PASSWORD_HASHER.hash(payload.password),payload.role,student_id,lecturer_id)
+            ).fetchone()
+        except psycopg.errors.UniqueViolation as exc:
+            raise HTTPException(status_code=409,detail="An account already exists for this email or academic record. Sign in instead.") from exc
+        _issue_session(db,account["id"],response)
+        log_action(db,"Self-service account created",f"{payload.role} account {email}")
+    return account
+
+
+@app.post("/api/auth/demo-admin")
+def demo_admin_login(response:Response):
+    """Issue a read-only public demo session for the administrator workspace."""
+    if os.getenv("CAMPUSBOOK_DEMO_ADMIN_ENABLED","").lower()!="true":
+        raise HTTPException(status_code=404,detail="Administrator demo access is disabled.")
+    with connect() as db:
+        user=db.execute("SELECT id,username,role,student_id,lecturer_id FROM user_accounts WHERE username='demo.admin' AND role='Administrator' AND is_active=TRUE").fetchone()
+        if not user:
+            raise HTTPException(status_code=503,detail="The administrator demo account is not configured.")
+        _issue_session(db,user["id"],response)
+        log_action(db,"Demo administrator signed in","Read-only demonstration session")
+    return user
+
+
+@app.middleware("http")
+async def protect_demo_administrator(request:Request,call_next):
+    # The public demo administrator can inspect the existing admin workspace,
+    # but cannot mutate the real shared academic database.
+    if request.method in {"POST","PUT","PATCH","DELETE"} and request.url.path not in {
+        "/api/auth/login","/api/auth/logout","/api/auth/demo-admin"
+    }:
+        token=request.cookies.get("campusbook_session")
+        if token:
+            try:
+                with connect() as db:
+                    demo=db.execute(
+                        """SELECT 1 FROM user_sessions s JOIN user_accounts u ON u.id=s.user_id
+                        WHERE s.token_hash=%s AND s.revoked_at IS NULL AND s.expires_at>%s
+                        AND u.username='demo.admin' AND u.is_active=TRUE""",
+                        (_session_digest(token),datetime.now(timezone.utc))
+                    ).fetchone()
+                if demo:
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse(status_code=403,content={"detail":"The public administrator demo is read-only. Sign in with an institution administrator account to make changes."})
+            except Exception:
+                # Fail closed for demo-admin writes if the identity check cannot be completed.
+                from fastapi.responses import JSONResponse
+                return JSONResponse(status_code=503,content={"detail":"Could not verify demo administrator permissions. Please retry."})
+    return await call_next(request)
+
+
 @app.post("/api/auth/logout")
 def logout(request:Request,response:Response):
     token=request.cookies.get("campusbook_session")
@@ -681,6 +757,51 @@ def browse_course_offerings(user:dict[str,Any]=Depends(get_current_user)):
             ORDER BY a.name DESC,s.name,c.course_code""").fetchall()
 
 
+@app.post("/api/student/course-offerings/register",status_code=200)
+def register_selected_courses(payload:BulkCourseRegistrationInput,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Student")
+    ids=list(dict.fromkeys(payload.course_offering_ids))
+    if len(ids)!=len(payload.course_offering_ids):
+        raise HTTPException(status_code=422,detail="The selected course list contains duplicates.")
+    registered=0
+    already_registered=0
+    with connect() as db:
+        for offering_id in ids:
+            offering=db.execute(
+                """SELECT o.id,o.capacity,o.status,c.level,d.name AS department,
+                st.department AS student_department,st.level AS student_level,st.status AS student_status,
+                s.registration_opens_at,s.registration_closes_at
+                FROM course_offerings o JOIN courses c ON c.id=o.course_id
+                JOIN departments d ON d.id=c.department_id JOIN semesters s ON s.id=o.semester_id
+                JOIN students st ON st.id=%s WHERE o.id=%s FOR UPDATE OF o""",
+                (user["student_id"],offering_id)
+            ).fetchone()
+            if not offering: raise HTTPException(status_code=404,detail=f"Course offering {offering_id} was not found.")
+            now=datetime.now(timezone.utc)
+            if offering["status"]!="Open" or offering["student_status"]!="Active":
+                raise HTTPException(status_code=409,detail="One or more selected courses are not open for registration.")
+            if offering["department"]!=offering["student_department"] or offering["level"]!=offering["student_level"]:
+                raise HTTPException(status_code=403,detail="One or more selected courses are not available for your department or level.")
+            if offering["registration_opens_at"] and offering["registration_opens_at"]>now:
+                raise HTTPException(status_code=409,detail="Registration has not opened for one or more selected courses.")
+            if offering["registration_closes_at"] and offering["registration_closes_at"]<now:
+                raise HTTPException(status_code=409,detail="Registration has closed for one or more selected courses.")
+            existing=db.execute("SELECT id,status FROM course_registrations WHERE course_offering_id=%s AND student_id=%s",(offering_id,user["student_id"])).fetchone()
+            if existing and existing["status"]=="Registered":
+                already_registered+=1
+                continue
+            count=db.execute("SELECT COUNT(*) AS count FROM course_registrations WHERE course_offering_id=%s AND status='Registered'",(offering_id,)).fetchone()["count"]
+            if offering["capacity"] is not None and count>=offering["capacity"]:
+                raise HTTPException(status_code=409,detail="One or more selected courses have reached capacity.")
+            if existing:
+                db.execute("UPDATE course_registrations SET status='Registered',registered_at=NOW(),dropped_at=NULL WHERE id=%s",(existing["id"],))
+            else:
+                db.execute("INSERT INTO course_registrations (course_offering_id,student_id,status) VALUES (%s,%s,'Registered')",(offering_id,user["student_id"]))
+            registered+=1
+        log_action(db,"Bulk course registration",f"Student ID {user['student_id']} registered for {registered} courses")
+    return {"registered":registered,"already_registered":already_registered}
+
+
 @app.post("/api/student/course-offerings/{offering_id}/register",status_code=201)
 def register_for_course(offering_id:int,user:dict[str,Any]=Depends(get_current_user)):
     require_roles(user,"Student")
@@ -726,7 +847,7 @@ def student_registrations(user:dict[str,Any]=Depends(get_current_user)):
     require_roles(user,"Student")
     with connect() as db:
         return db.execute(
-            """SELECT cr.id,cr.status,cr.registered_at,c.course_code,c.title AS course_title,c.credit_units,
+            """SELECT cr.id,cr.course_offering_id,cr.status,cr.registered_at,c.course_code,c.title AS course_title,c.credit_units,
             s.name AS semester,a.name AS academic_session,o.section FROM course_registrations cr
             JOIN course_offerings o ON o.id=cr.course_offering_id JOIN courses c ON c.id=o.course_id
             JOIN semesters s ON s.id=o.semester_id JOIN academic_sessions a ON a.id=s.academic_session_id
