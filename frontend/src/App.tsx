@@ -19,11 +19,31 @@ type ActivityItem = {id:number;action:string;details:string;created_at:string};
 type Dashboard = {total_students:number;active_students:number;departments:number;available_backups:number;recent_activity:ActivityItem[];students_by_department:{name:string;count:number}[]};
 type StudentForm = Omit<Student,'id'|'created_at'>;
 
+class ApiError extends Error {
+  constructor(message:string,readonly status:number){super(message);this.name='ApiError';}
+}
 async function request<T=any>(path:string, options?:RequestInit):Promise<T> {
   const response = await fetch(API+path,{...options,headers:{'Content-Type':'application/json',...(options?.headers||{})}});
-  if(!response.ok){const body=await response.json().catch(()=>({}));throw new Error(body.detail||'The request could not be completed.');}
+  if(!response.ok){
+    const body=await response.json().catch(()=>({}));
+    throw new ApiError(body.detail||(response.status===502||response.status===503||response.status===504?'CampusBook is starting up.':'The request could not be completed.'),response.status);
+  }
   if(response.status===204)return undefined as T;
   return response.json();
+}
+const wait=(ms:number)=>new Promise(resolve=>window.setTimeout(resolve,ms));
+async function requestWithRetry<T>(path:string,attempts=8):Promise<T>{
+  let lastError:unknown;
+  for(let attempt=0;attempt<attempts;attempt++){
+    try{return await request<T>(path);}
+    catch(error){
+      lastError=error;
+      const transient=(error instanceof ApiError&&[502,503,504].includes(error.status))||error instanceof TypeError;
+      if(!transient||attempt===attempts-1)throw error;
+      await wait(Math.min(2000*(2**attempt),12000));
+    }
+  }
+  throw lastError instanceof Error?lastError:new Error('Could not connect to CampusBook.');
 }
 const emptyStudent:StudentForm={matric_number:'',first_name:'',last_name:'',department:'Computer Engineering',level:'300',status:'Active'};
 const dateLabel=(v:string)=>new Date(v).toLocaleString([],{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'});
@@ -58,9 +78,9 @@ export default function App(){
     setLoading(true);setError('');
     try{
       const [d,s,de,r,b,a]=await Promise.all([
-        request<Dashboard>('/api/dashboard'),request<Student[]>('/api/students'),
-        request<Department[]>('/api/departments'),request<Result[]>('/api/results'),
-        request<Backup[]>('/api/backups'),request<ActivityItem[]>('/api/activity'),
+        requestWithRetry<Dashboard>('/api/dashboard'),requestWithRetry<Student[]>('/api/students'),
+        requestWithRetry<Department[]>('/api/departments'),requestWithRetry<Result[]>('/api/results'),
+        requestWithRetry<Backup[]>('/api/backups'),requestWithRetry<ActivityItem[]>('/api/activity'),
       ]);
       setDashboard(d);setStudents(s);setDepartments(de);setResults(r);setBackups(b);setActivity(a);
     }catch(e){setError(e instanceof Error?e.message:'Could not connect to the API.');}
@@ -128,7 +148,8 @@ export default function App(){
     <main className="main">
       <header className="topbar"><button className="mobile-menu-button" aria-label="Open navigation" onClick={()=>setMobileNavOpen(v=>!v)}><Menu size={20}/></button><div className="breadcrumb"><span>Workspace</span><ChevronRight size={14}/><b>{page}</b></div><div className="top-actions"><div className="system-status"><i/>System operational</div><div className="top-avatar">CA</div></div></header>
       <div className="content">
-        {error&&<div className="error-banner"><Database size={17}/><div><b>Can't reach the CampusBook API</b><span>{error} Start FastAPI on port 8000, then retry.</span></div><button onClick={()=>void refresh()}>Retry</button></div>}
+        {loading&&!dashboard&&!error&&<div className="loading-banner"><RefreshCw size={17} className="spin"/><div><b>Connecting to CampusBook</b><span>The server may be waking up. We'll reconnect automatically; this can take up to a minute.</span></div></div>}
+        {error&&<div className="error-banner"><Database size={17}/><div><b>CampusBook is temporarily unavailable</b><span>{error} We tried reconnecting automatically. Please try again.</span></div><button onClick={()=>void refresh()}>Retry</button></div>}
         {notice&&<div className="toast"><Check size={16}/>{notice}<button onClick={()=>setNotice('')}><X size={15}/></button></div>}
         {page==='Overview'&&<>
           <PageHeading eyebrow="INSTITUTION OVERVIEW" title="Good morning, Admin" description="Here’s what’s happening across your institution today." action={<button className="primary-button" onClick={openCreateStudent}><Plus size={17}/> Add student</button>}/>
