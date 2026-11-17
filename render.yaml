@@ -2,19 +2,14 @@ services:
   - type: web
     name: campusbook-api
     runtime: python
-    plan: starter
+    plan: free
+    region: frankfurt
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
-    disk:
-      name: campusbook-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
-      - key: CAMPUSBOOK_DATA_DIR
-        value: /var/data
-      - key: CAMPUSBOOK_BACKUP_DIR
-        value: /var/data/backups
+      - key: DATABASE_URL
+        sync: false
       - key: CAMPUSBOOK_CORS_ORIGINS
         sync: false
