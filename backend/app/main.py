@@ -76,6 +76,21 @@ class AccountProvisionInput(BaseModel):
     lecturer_id: int | None = Field(default=None, gt=0)
 
 
+class AcademicSessionInput(BaseModel):
+    name: str = Field(min_length=4,max_length=20)
+    starts_on: date | None = None
+    ends_on: date | None = None
+    is_current: bool = False
+
+
+class SemesterInput(BaseModel):
+    academic_session_id: int = Field(gt=0)
+    name: str = Field(pattern="^(First Semester|Second Semester|Summer)$")
+    registration_opens_at: datetime | None = None
+    registration_closes_at: datetime | None = None
+    is_published: bool = False
+
+
 class LecturerInput(BaseModel):
     staff_number: str = Field(min_length=2,max_length=40)
     first_name: str = Field(min_length=1,max_length=80)
@@ -881,3 +896,51 @@ def grade_submissions(user:dict[str,Any]=Depends(get_current_user)):
             GROUP BY o.id,c.course_code,c.title,o.section,s.name,a.name,l.first_name,l.last_name
             ORDER BY a.name DESC,s.name,c.course_code"""
         ).fetchall()
+
+
+@app.get("/api/admin/academic-sessions")
+def list_academic_sessions(user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        return db.execute("SELECT id,name,starts_on,ends_on,is_current FROM academic_sessions ORDER BY name DESC").fetchall()
+
+
+@app.post("/api/admin/academic-sessions",status_code=201)
+def create_academic_session(payload:AcademicSessionInput,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    if payload.starts_on and payload.ends_on and payload.starts_on>payload.ends_on:
+        raise HTTPException(status_code=422,detail="Session start date must be before its end date.")
+    with connect() as db:
+        try:
+            row=db.execute("INSERT INTO academic_sessions (name,starts_on,ends_on,is_current) VALUES (%s,%s,%s,%s) RETURNING *",(payload.name.strip(),payload.starts_on,payload.ends_on,payload.is_current)).fetchone()
+        except psycopg.errors.UniqueViolation as exc:
+            raise HTTPException(status_code=409,detail="Academic session already exists.") from exc
+    return row
+
+
+@app.get("/api/admin/semesters")
+def list_semesters(session_id:int|None=Query(default=None,gt=0),user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        if session_id:
+            return db.execute("SELECT id,academic_session_id,name,registration_opens_at,registration_closes_at,is_published FROM semesters WHERE academic_session_id=%s ORDER BY id",(session_id,)).fetchall()
+        return db.execute("SELECT id,academic_session_id,name,registration_opens_at,registration_closes_at,is_published FROM semesters ORDER BY academic_session_id DESC,id").fetchall()
+
+
+@app.post("/api/admin/semesters",status_code=201)
+def create_semester(payload:SemesterInput,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    if payload.registration_opens_at and payload.registration_closes_at and payload.registration_opens_at>payload.registration_closes_at:
+        raise HTTPException(status_code=422,detail="Registration opening time must be before its closing time.")
+    with connect() as db:
+        try:
+            row=db.execute(
+                """INSERT INTO semesters (academic_session_id,name,registration_opens_at,registration_closes_at,is_published)
+                VALUES (%s,%s,%s,%s,%s) RETURNING *""",
+                (payload.academic_session_id,payload.name,payload.registration_opens_at,payload.registration_closes_at,payload.is_published)
+            ).fetchone()
+        except psycopg.errors.UniqueViolation as exc:
+            raise HTTPException(status_code=409,detail="This semester already exists for the academic session.") from exc
+        except psycopg.errors.ForeignKeyViolation as exc:
+            raise HTTPException(status_code=404,detail="Academic session not found.") from exc
+    return row
