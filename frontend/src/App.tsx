@@ -13,9 +13,11 @@ type Offering={id:number;course_code:string;course_title:string;credit_units:num
 type RosterRow={student_id:number;matric_number:string;first_name:string;last_name:string;score:number|null;grade_status:string|null};
 type Student = {
   id:number; matric_number:string; first_name:string; last_name:string;
-  department:string; level:string; status:string; created_at:string;
+  department:string; department_id:number; faculty:string; level:string; status:string; created_at:string;
 };
-type Department = {id:number;name:string;code:string;student_count:number};
+type Department = {id:number;name:string;code:string;faculty_id:number;faculty_name:string;student_count:number};
+type Faculty = {id:number;name:string;code:string;department_count:number};
+type GradeSubmission={offering_id:number;course_code:string;course_title:string;section:string;semester:string;academic_session:string;lecturer_first_name:string|null;lecturer_last_name:string|null;roster_count:number;submitted_count:number;published_count:number};
 type Result = {id:number;student_id:number;course_code:string;course_title:string;score:number;semester:string;matric_number:string;first_name:string;last_name:string};
 type Backup = {filename:string;size_bytes:number;modified_at:string};
 type ActivityItem = {id:number;action:string;details:string;created_at:string};
@@ -103,12 +105,15 @@ export default function App(){
   const [dashboard,setDashboard]=useState<Dashboard|null>(null);
   const [students,setStudents]=useState<Student[]>([]);
   const [departments,setDepartments]=useState<Department[]>([]);
+  const [faculties,setFaculties]=useState<Faculty[]>([]);
+  const [gradeSubmissions,setGradeSubmissions]=useState<GradeSubmission[]>([]);
   const [results,setResults]=useState<Result[]>([]);
   const [backups,setBackups]=useState<Backup[]>([]);
   const [activity,setActivity]=useState<ActivityItem[]>([]);
   const [search,setSearch]=useState('');
   const [studentStatus,setStudentStatus]=useState('All');
   const [studentDepartment,setStudentDepartment]=useState('All');
+  const [studentFaculty,setStudentFaculty]=useState('All');
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState('');
   const [notice,setNotice]=useState('');
@@ -118,18 +123,18 @@ export default function App(){
   const [resultModal,setResultModal]=useState(false);
   const [resultForm,setResultForm]=useState({student_id:'',course_code:'',course_title:'',score:'',semester:'First Semester 2026/2027'});
   const [departmentModal,setDepartmentModal]=useState(false);
-  const [departmentForm,setDepartmentForm]=useState({name:'',code:''});
+  const [departmentForm,setDepartmentForm]=useState({name:'',code:'',faculty_id:''});
   const [saving,setSaving]=useState(false);
 
   async function refresh(){
     setLoading(true);setError('');
     try{
-      const [d,s,de,r,b,a]=await Promise.all([
+      const [d,s,de,fa,r,b,a,gs]=await Promise.all([
         requestWithRetry<Dashboard>('/api/dashboard'),requestWithRetry<Student[]>('/api/students'),
-        requestWithRetry<Department[]>('/api/departments'),requestWithRetry<Result[]>('/api/results'),
-        requestWithRetry<Backup[]>('/api/backups'),requestWithRetry<ActivityItem[]>('/api/activity'),
+        requestWithRetry<Department[]>('/api/departments'),requestWithRetry<Faculty[]>('/api/faculties'),requestWithRetry<Result[]>('/api/results'),
+        requestWithRetry<Backup[]>('/api/backups'),requestWithRetry<ActivityItem[]>('/api/activity'),requestWithRetry<GradeSubmission[]>('/api/admin/grade-submissions'),
       ]);
-      setDashboard(d);setStudents(s);setDepartments(de);setResults(r);setBackups(b);setActivity(a);
+      setDashboard(d);setStudents(s);setDepartments(de);setFaculties(fa);setResults(r);setBackups(b);setActivity(a);setGradeSubmissions(gs);
     }catch(e){setError(e instanceof Error?e.message:'Could not connect to the API.');}
     finally{setLoading(false);}
   }
@@ -143,8 +148,9 @@ export default function App(){
     const matchesSearch=[s.first_name,s.last_name,s.matric_number,s.department].join(' ').toLowerCase().includes(search.toLowerCase());
     const matchesStatus=studentStatus==='All'||s.status===studentStatus;
     const matchesDepartment=studentDepartment==='All'||s.department===studentDepartment;
-    return matchesSearch&&matchesStatus&&matchesDepartment;
-  }),[students,search,studentStatus,studentDepartment]);
+    const matchesFaculty=studentFaculty==='All'||s.faculty===studentFaculty;
+    return matchesSearch&&matchesStatus&&matchesDepartment&&matchesFaculty;
+  }),[students,search,studentStatus,studentDepartment,studentFaculty]);
 
   function openCreateStudent(){setEditingStudent(null);setStudentForm(emptyStudent);setStudentModal(true);}
   function openEditStudent(s:Student){setEditingStudent(s);setStudentForm({matric_number:s.matric_number,first_name:s.first_name,last_name:s.last_name,department:s.department,level:s.level,status:s.status});setStudentModal(true);}
@@ -171,7 +177,7 @@ export default function App(){
   }
   async function saveDepartment(e:FormEvent){
     e.preventDefault();setSaving(true);
-    try{await request('/api/departments',{method:'POST',body:JSON.stringify(departmentForm)});setDepartmentModal(false);setDepartmentForm({name:'',code:''});setNotice('Department added.');await refresh();}
+    try{await request('/api/departments',{method:'POST',body:JSON.stringify({...departmentForm,faculty_id:Number(departmentForm.faculty_id)})});setDepartmentModal(false);setDepartmentForm({name:'',code:'',faculty_id:''});setNotice('Department added.');await refresh();}
     catch(e){setNotice(e instanceof Error?e.message:'Could not add department.');}finally{setSaving(false);}
   }
   async function saveResult(e:FormEvent){
