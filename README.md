@@ -4,11 +4,11 @@ A client/server Student Records Management System with database backup and recov
 
 ## Project status
 
-**Stage:** Initial scaffold
+**Stage:** Initial MVP implementation on `feature/campusbook-mvp`.
 
-CampusBook is being developed as an academic Data Communications project to demonstrate how a client communicates with an application server over HTTP, how the server manages persistent student records, and how an operator can back up and restore the database.
+CampusBook demonstrates how a browser client communicates with an application server over HTTP, how the server manages persistent student records, and how an operator can back up and restore the database.
 
-## Planned architecture
+## Architecture
 
 ```text
 React + TypeScript client
@@ -23,18 +23,20 @@ SQLite database
         |
         +---- Backup service ----> timestamped database snapshots
         |
-        +---- Restore service <--- selected verified snapshot
+        +---- Restore service <--- validated snapshot
 ```
 
-## Core scope
+## Implemented in this branch
 
-- Dashboard with student and department summaries
-- Student records: create, view, update, delete, search
-- Department records
-- Results management
-- Database backup: create timestamped snapshots and list available backups
-- Database recovery: validate and restore a selected backup
-- Activity log for important administrative actions
+- Dashboard with live student, department, and backup counts
+- Student records: create, list, and search
+- Department list and student counts
+- Backup creation using SQLite's online backup API
+- Backup history with file sizes and timestamps
+- Restore flow with integrity validation and a pre-restore safety copy
+- Activity log entries for student and backup operations
+- Responsive React administration interface
+- API test covering student creation, deletion, backup, and restore
 
 ## Technology
 
@@ -47,14 +49,70 @@ SQLite database
 | Validation | Pydantic |
 | Tests | Pytest and FastAPI TestClient |
 
-## Development
+## Run locally
 
-The repository will contain separate `frontend/` and `backend/` directories. See the setup instructions in each directory as they are added.
+### 1. Start the backend
 
-## Academic demonstration
+From the repository root:
 
-The backup/recovery demonstration must use the actual SQLite database file. The operator should create records, create a backup, introduce a controlled data-loss scenario, restore the backup, and verify that the records return. A successful API response alone is not sufficient evidence of recovery.
+```bash
+cd backend
+python -m venv .venv
+```
 
-## Important
+Activate the environment, then install dependencies:
 
-This is an academic demonstration system. Do not use real student personal data or deploy it as a production student information system without authentication, authorization, secure deployment, audit hardening, and appropriate privacy controls.
+**Windows PowerShell**
+```powershell
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+
+**macOS / Linux**
+```bash
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+
+The API runs at `http://localhost:8000`; interactive API documentation is at `http://localhost:8000/docs`.
+
+### 2. Start the frontend
+
+In a second terminal, from the repository root:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open the local URL printed by Vite (normally `http://localhost:5173`).
+
+### 3. Run backend tests
+
+From the repository root, with the backend virtual environment active:
+
+```bash
+cd backend
+pytest
+```
+
+## Backup and recovery demonstration
+
+1. Start both the API and frontend.
+2. Add a student record.
+3. Open **Backup & Recovery** and create a snapshot.
+4. Delete the student record through the API docs at `/docs` (or the student delete endpoint).
+5. Confirm the record is gone.
+6. Restore the earlier snapshot from the Backup & Recovery page.
+7. Confirm the student record returns.
+
+A successful HTTP response alone is not proof of recovery: verify that the data itself has returned.
+
+## Current limitations
+
+This is an academic demonstration system, not a production student information system. Student creation and listing/search are implemented; editing/deletion are currently API-only. Results are a planned module and are not yet implemented. Authentication, role-based authorization, production deployment hardening, backup retention, and off-site backup copies are also outside this initial MVP.
+
+Do not use real student personal data in this public academic demonstration repository.
