@@ -27,7 +27,7 @@ def clean_database(monkeypatch):
             ("Faculty of Science","SCI"),
             ("Faculty of Administration and Management","MGS"),
         ]
-        db.executemany("INSERT INTO faculties (name,code) VALUES (%s,%s)",faculties)
+        with db.cursor() as cursor:\n            cursor.executemany("INSERT INTO faculties (name,code) VALUES (%s,%s)",faculties)
         faculty_ids = {r["code"]:r["id"] for r in db.execute("SELECT id,code FROM faculties").fetchall()}
         db.executemany(
             "INSERT INTO departments (name,code,faculty_id) VALUES (%s,%s,%s)",
