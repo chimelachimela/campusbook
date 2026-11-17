@@ -196,7 +196,7 @@ def _issue_session(db: psycopg.Connection, user_id: int, response: Response) -> 
         "INSERT INTO user_sessions (user_id,token_hash,created_at,expires_at) VALUES (%s,%s,%s,%s)",
         (user_id,_session_digest(token),now,now+timedelta(hours=SESSION_HOURS)),
     )
-    response.set_cookie("campusbook_session",token,httponly=True,secure=True,samesite="none",max_age=SESSION_HOURS*3600,path="/")
+    response.set_cookie("campusbook_session",token,httponly=True,secure=not bool(os.getenv("CAMPUSBOOK_TESTING")),samesite="lax",max_age=SESSION_HOURS*3600,path="/")
 
 
 def get_current_user(request: Request) -> dict[str, Any]:
