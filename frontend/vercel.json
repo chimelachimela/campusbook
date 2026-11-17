@@ -4,5 +4,8 @@
       "source": "/api/:path*",
       "destination": "https://campusbook-api.vercel.app/api/:path*"
     }
-  ]
+  ],
+  "git": {
+    "deploymentEnabled": false
+  }
 }
