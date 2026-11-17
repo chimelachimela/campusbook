@@ -11,3 +11,40 @@
 .results-caption b{color:#596782;font-weight:700}
 @media(max-width:900px){.table-tools{width:100%}.filter-select{flex:1;min-width:130px;max-width:none}}
 @media(max-width:560px){.table-tools{align-items:stretch}.filter-select{min-width:calc(50% - 5px)}.table-tools .filter-button{flex:1}}
+
+
+/* Final V1 readability and mobile identity pass */
+:root{color:#172238;background:#f6f8fc}
+.page-heading p,.panel-head p,.table-toolbar p,.stat-label,.stat-note,.student-cell span,.activity-row span,.activity-row small,.muted-cell,.empty-state span,.footer{color:#59677d}
+th{color:#536078;font-size:10px}
+td{color:#35435a;font-size:12px}
+.student-cell b{font-size:12px;color:#202c42}
+.student-cell span{font-size:10px}
+.nav-item{font-size:13px}
+.page-heading p,.panel-head p,.table-toolbar p{font-size:13px;line-height:1.5}
+.stat-label{font-size:12px}
+.stat-note{font-size:11px}
+.stat-value{font-size:27px}
+.primary-button,.secondary-button,.filter-button,.restore-button{font-size:12px;min-height:38px}
+.mobile-brand,.mobile-menu-button{display:none}
+@media(max-width:700px){
+  .sidebar{width:250px;transform:translateX(-100%);transition:transform .2s ease;box-shadow:none}
+  .sidebar.mobile-open{transform:translateX(0);box-shadow:12px 0 32px #14213b24}
+  .brand{display:none}
+  .mobile-brand{display:flex;align-items:center;gap:10px;padding:0 8px 20px;font:800 20px Manrope,sans-serif;color:#18243b}
+  .mobile-brand .brand-light{color:#75809a;font-weight:500}
+  .workspace{display:flex;margin:8px 0 24px}
+  .nav-label{display:block}
+  .nav-item span{display:inline}
+  .sidebar nav{margin-top:0}
+  .sidebar-bottom .profile{display:flex}
+  .main{margin-left:0}
+  .topbar{gap:12px}
+  .mobile-menu-button{display:grid;place-items:center;border:0;background:transparent;color:#273650;padding:6px;cursor:pointer}
+  .breadcrumb{margin-right:auto}
+  .content{padding:20px 14px}
+  .page-heading h1{font-size:24px}
+  .page-heading p{font-size:13px}
+  .table-wrap{max-width:calc(100vw - 28px)}
+  .stats-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
