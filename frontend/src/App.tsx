@@ -244,6 +244,7 @@ export default function App(){
       <div className="sidebar-bottom"><div className="profile"><div className="profile-avatar">CA</div><div><b>{user.username}</b><small>Administrator</small></div></div></div>
     </aside>
     <main className="main">
+      {user.username==='demo.admin'&&<div className="portal-notice admin-demo-banner">You are exploring the administrator workspace in read-only demo mode. Sign in with an institution administrator account to make changes.</div>}
       <header className="topbar"><button className="mobile-menu-button" aria-label="Open navigation" onClick={()=>setMobileNavOpen(v=>!v)}><Menu size={20}/></button><div className="breadcrumb"><span>Workspace</span><ChevronRight size={14}/><b>{page}</b></div><div className="top-actions"><div className="system-status"><i/>System operational</div><span className="admin-user-label">{user.username}</span><button className="secondary-button signout-button" onClick={()=>void signOut()}>Sign out</button></div></header>
       <div className="content">
         {loading&&!dashboard&&!error&&<div className="loading-banner"><RefreshCw size={17} className="spin"/><div><b>Connecting to CampusBook</b><span>The server may be waking up. We'll reconnect automatically; this can take up to a minute.</span></div></div>}
