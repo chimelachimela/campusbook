@@ -93,12 +93,7 @@ CREATE TABLE IF NOT EXISTS course_grades (
     id BIGSERIAL PRIMARY KEY,
     registration_id BIGINT NOT NULL UNIQUE
         REFERENCES course_registrations(id) ON DELETE RESTRICT,
-    ca_score NUMERIC(5,2) CHECK (ca_score IS NULL OR ca_score BETWEEN 0 AND 40),
-    exam_score NUMERIC(5,2) CHECK (exam_score IS NULL OR exam_score BETWEEN 0 AND 60),
-    total_score NUMERIC(5,2) GENERATED ALWAYS AS (
-        CASE WHEN ca_score IS NOT NULL AND exam_score IS NOT NULL
-             THEN ca_score + exam_score ELSE NULL END
-    ) STORED,
+    score NUMERIC(5,2) NOT NULL CHECK (score BETWEEN 0 AND 100),
     letter_grade VARCHAR(2) CHECK (letter_grade IS NULL OR letter_grade IN ('A','B','C','D','E','F')),
     status VARCHAR(20) NOT NULL DEFAULT 'Draft'
         CHECK (status IN ('Draft','Submitted','Approved','Published')),
