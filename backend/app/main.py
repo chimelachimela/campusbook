@@ -650,6 +650,47 @@ def signup(payload:SignupInput,response:Response):
     return account
 
 
+@app.post("/api/auth/demo-admin")
+def demo_admin_login(response:Response):
+    """Issue a read-only public demo session for the administrator workspace."""
+    if os.getenv("CAMPUSBOOK_DEMO_ADMIN_ENABLED","").lower()!="true":
+        raise HTTPException(status_code=404,detail="Administrator demo access is disabled.")
+    with connect() as db:
+        user=db.execute("SELECT id,username,role,student_id,lecturer_id FROM user_accounts WHERE username='demo.admin' AND role='Administrator' AND is_active=TRUE").fetchone()
+        if not user:
+            raise HTTPException(status_code=503,detail="The administrator demo account is not configured.")
+        _issue_session(db,user["id"],response)
+        log_action(db,"Demo administrator signed in","Read-only demonstration session")
+    return user
+
+
+@app.middleware("http")
+async def protect_demo_administrator(request:Request,call_next):
+    # The public demo administrator can inspect the existing admin workspace,
+    # but cannot mutate the real shared academic database.
+    if request.method in {"POST","PUT","PATCH","DELETE"} and request.url.path not in {
+        "/api/auth/login","/api/auth/logout","/api/auth/demo-admin"
+    }:
+        token=request.cookies.get("campusbook_session")
+        if token:
+            try:
+                with connect() as db:
+                    demo=db.execute(
+                        """SELECT 1 FROM user_sessions s JOIN user_accounts u ON u.id=s.user_id
+                        WHERE s.token_hash=%s AND s.revoked_at IS NULL AND s.expires_at>%s
+                        AND u.username='demo.admin' AND u.is_active=TRUE""",
+                        (_session_digest(token),datetime.now(timezone.utc))
+                    ).fetchone()
+                if demo:
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse(status_code=403,content={"detail":"The public administrator demo is read-only. Sign in with an institution administrator account to make changes."})
+            except Exception:
+                # Fail closed for demo-admin writes if the identity check cannot be completed.
+                from fastapi.responses import JSONResponse
+                return JSONResponse(status_code=503,content={"detail":"Could not verify demo administrator permissions. Please retry."})
+    return await call_next(request)
+
+
 @app.post("/api/auth/logout")
 def logout(request:Request,response:Response):
     token=request.cookies.get("campusbook_session")
