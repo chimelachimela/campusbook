@@ -2,19 +2,25 @@
 
 ## Automated PostgreSQL integration tests
 
-The pytest suite runs against a disposable PostgreSQL database and covers:
+The pytest suite runs against a disposable PostgreSQL 17 database. It applies all migrations and resets the test tables before each test.
 
 | Test | Expected result |
-| --- | --- |
+|---|---|
 | API health | Confirms API and PostgreSQL connectivity |
-| Student CRUD | Creates, searches, updates, and deletes a student |
-| Duplicate matriculation number | Returns HTTP 409 |
-| Backup and recovery | Restores a deleted student and its course results |
-| Restore safety | Creates a pre-restore safety snapshot |
-| Department management | Creates a department and lists student counts |
-| Result management | Records and lists results; student deletion cascades |
-| Filename validation | Rejects invalid and missing backup names |
-| Activity log | Records important system actions |
+| Authentication | Bootstrap, login, session lookup and invalid credentials |
+| Role enforcement | Unauthenticated requests return 401; disallowed roles return 403 |
+| Student CRUD | Creates, searches, updates and deletes students |
+| Matriculation validation | Rejects values outside DE/YYYY/NNNN |
+| Email privacy | Student API responses do not contain an email field |
+| Faculty/department | Students are associated with a department and faculty |
+| Course setup | Creates lecturer, course, session, semester and offering |
+| Student registration | Student registers for an eligible offering |
+| Lecturer roster | Lecturer sees only the assigned course roster |
+| Grade workflow | Lecturer saves and submits a complete roster; administrator approves it |
+| Student result privacy | Student sees their own published result |
+| Backup/recovery | Restores academic records and results from a V2 snapshot |
+| Restore safety | Creates a pre-restore safety snapshot and revokes previous sessions |
+| Activity log | Records important actions |
 
 Run against a disposable PostgreSQL database:
 
@@ -36,32 +42,51 @@ npm install
 npm run build
 ```
 
+## Manual acceptance test: academic workflow
+
+Use fictional student and lecturer details only.
+
+1. Sign in as Administrator.
+2. Confirm the Faculty → Department hierarchy.
+3. Create a student using a DE/YYYY/NNNN matriculation number.
+4. Create an academic session and semester.
+5. Add a course to the department's course catalogue.
+6. Create a lecturer record and provision their account.
+7. Open a course offering and assign the lecturer.
+8. Provision a student account.
+9. Sign in as the student and register for the eligible offering.
+10. Sign in as the lecturer and open the assigned class roster.
+11. Enter marks or import a CSV with `matric_number,score` columns.
+12. Review the roster, save draft grades and submit it.
+13. Sign in as Administrator and approve/publish the submitted grades.
+14. Sign in as the student and confirm only their published results are visible.
+
 ## Manual acceptance test: backup and recovery
 
-Use synthetic student details only.
+1. Sign in as Administrator.
+2. Create a backup before making a test change.
+3. Delete a separate synthetic student with no active course registrations.
+4. Confirm the student is absent.
+5. Restore the snapshot.
+6. Confirm the student and associated records return.
+7. Confirm a pre-restore safety snapshot appears in backup history.
+8. Confirm the activity log records the recovery sequence.
+9. Sign in again because recovery revokes pre-restore sessions.
 
-1. Open the deployed CampusBook frontend.
-2. Add a test student and record a course result for that student.
-3. Create a backup in Backup & Recovery.
-4. Delete the test student.
-5. Confirm the student and associated result are gone.
-6. Restore the snapshot created in step 3.
-7. Confirm the student and result have returned.
-8. Confirm a pre-restore safety snapshot appears in backup history.
-9. Confirm the activity log records the create, delete, backup, and restore operations.
-
-**Acceptance condition:** the student and associated result must actually return from the stored snapshot. A successful HTTP response alone is not sufficient evidence.
+**Acceptance condition:** records must actually return from the stored snapshot. A successful HTTP response alone is not sufficient evidence.
 
 ## Evidence for the academic demonstration
 
 Capture screenshots of:
-- Dashboard with student and department summary cards.
-- Student directory with synthetic records.
-- Department directory and student counts.
-- Results table with a course result.
-- Backup history showing a created snapshot.
-- Student and result before deletion, after deletion, and after restoration.
-- Activity log showing the recovery sequence.
+- Administrator dashboard.
+- Student directory filtered by faculty and department.
+- Academic setup: session, semester, course, lecturer and offering.
+- Student course registration.
+- Lecturer class roster and CSV import/grade grid.
+- Administrator grade-submission review and approval.
+- Student published results.
+- Backup history and recovery evidence.
+- Activity log.
 - Passing GitHub Actions checks.
 
 ## Important limitations
