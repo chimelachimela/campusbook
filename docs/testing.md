@@ -1,27 +1,33 @@
 # CampusBook test plan and acceptance checks
 
-## Automated tests
+## Automated PostgreSQL integration tests
 
-The repository includes pytest tests for:
+The pytest suite runs against a disposable PostgreSQL database and covers:
 
 | Test | Expected result |
 | --- | --- |
-| API health | Returns HTTP 200 and service status |
-| Student creation | Persists a student and returns the new record |
-| Backup and recovery | A deleted student reappears after restoring a valid snapshot |
-| Result management | A valid course result can be recorded, listed, and deleted |
-| Department management | A new department is stored and appears in the directory |
-| Restore path validation | An unsafe or missing backup path is rejected |
+| API health | Confirms API and PostgreSQL connectivity |
+| Student CRUD | Creates, searches, updates, and deletes a student |
+| Duplicate matriculation number | Returns HTTP 409 |
+| Backup and recovery | Restores a deleted student and its course results |
+| Restore safety | Creates a pre-restore safety snapshot |
+| Department management | Creates a department and lists student counts |
+| Result management | Records and lists results; student deletion cascades |
+| Filename validation | Rejects invalid and missing backup names |
+| Activity log | Records important system actions |
 
-Run from the `backend/` directory after installing `requirements.txt`:
+Run against a disposable PostgreSQL database:
 
 ```bash
+cd backend
+export DATABASE_URL="postgresql://..."
+export CAMPUSBOOK_AUTO_MIGRATE=true
 pytest -v
 ```
 
-GitHub Actions runs this suite on pushes to the project branch and pull requests targeting `main`.
+GitHub Actions provisions PostgreSQL 17 for every CI run. Do not point the test suite at a database containing data you need: tests truncate the test tables.
 
-## Frontend build check
+## Frontend production build
 
 From `frontend/`:
 
@@ -30,44 +36,34 @@ npm install
 npm run build
 ```
 
-The build check is also part of the GitHub Actions workflow.
-
 ## Manual acceptance test: backup and recovery
 
 Use synthetic student details only.
 
-1. Start the FastAPI server and React development server.
-2. Add a test student through the Students page.
-3. Confirm the new record appears in the list and dashboard count.
-4. Open Backup & Recovery and create a backup.
-5. Delete the test student.
-6. Confirm the record is no longer listed.
-7. Restore the snapshot created in step 4.
-8. Confirm the student record has returned.
-9. Confirm a pre-restore safety copy exists in the backend backup directory.
-10. Confirm the activity log records the create, delete, backup, and restore operations.
+1. Open the deployed CampusBook frontend.
+2. Add a test student and record a course result for that student.
+3. Create a backup in Backup & Recovery.
+4. Delete the test student.
+5. Confirm the student and associated result are gone.
+6. Restore the snapshot created in step 3.
+7. Confirm the student and result have returned.
+8. Confirm a pre-restore safety snapshot appears in backup history.
+9. Confirm the activity log records the create, delete, backup, and restore operations.
 
-**Acceptance condition:** the student record must actually return from the database snapshot. A successful restore response alone is not sufficient evidence.
+**Acceptance condition:** the student and associated result must actually return from the stored snapshot. A successful HTTP response alone is not sufficient evidence.
 
-## Manual checks for other modules
-
-- Create a department and confirm it appears in the department directory.
-- Add a student using the new department and confirm the department student count updates.
-- Record a course result for a student and confirm the score and letter grade display.
-- Try a score below 0 or above 100 using the API docs; the API should reject it.
-- Edit a student and confirm the changes persist after refreshing the page.
-- Delete a student and confirm their associated results are removed by the foreign-key cascade.
-
-## Evidence to capture for the academic demonstration
+## Evidence for the academic demonstration
 
 Capture screenshots of:
 - Dashboard with student and department summary cards.
-- Student directory with at least two synthetic student records.
+- Student directory with synthetic records.
 - Department directory and student counts.
-- Results table with one or more course results.
+- Results table with a course result.
 - Backup history showing a created snapshot.
-- Student record before deletion, after deletion, and after restoration.
-- Activity log showing the backup/recovery sequence.
-- GitHub Actions passing checks.
+- Student and result before deletion, after deletion, and after restoration.
+- Activity log showing the recovery sequence.
+- Passing GitHub Actions checks.
 
-Do not use actual student personal data in the public repository or screenshots.
+## Important limitations
+
+Logical JSONB snapshots live inside the same Neon database as the application data. They demonstrate application-level recovery but are not independent disaster-recovery backups. Do not use real student personal data in this public academic demonstration.
