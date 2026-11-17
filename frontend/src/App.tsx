@@ -26,7 +26,7 @@ type Result = {id:number;student_id:number;course_code:string;course_title:strin
 type Backup = {filename:string;size_bytes:number;modified_at:string};
 type ActivityItem = {id:number;action:string;details:string;created_at:string};
 type Dashboard = {total_students:number;active_students:number;departments:number;available_backups:number;recent_activity:ActivityItem[];students_by_department:{name:string;count:number}[]};
-type StudentForm = Omit<Student,'id'|'created_at'>;
+type StudentForm = Omit<Student,'id'|'created_at'|'department_id'|'faculty'>;
 
 class ApiError extends Error {
   constructor(message:string,readonly status:number){super(message);this.name='ApiError';}
