@@ -1,24 +1,30 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import secrets
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import psycopg
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 MIGRATION_FILE = BASE_DIR / "migrations" / "001_initial_postgres.sql"
 BACKUP_VERSION = 1
+PASSWORD_HASHER = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2)
+SESSION_HOURS = 12
 
 app = FastAPI(
     title="CampusBook API",
@@ -49,6 +55,33 @@ class StudentInput(BaseModel):
     department: str = Field(min_length=1, max_length=100)
     level: str = Field(min_length=1, max_length=20)
     status: str = Field(default="Active", pattern="^(Active|Inactive)$")
+
+
+class LoginInput(BaseModel):
+    username: str = Field(min_length=3, max_length=80)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class BootstrapInput(BaseModel):
+    username: str = Field(min_length=3, max_length=80)
+    password: str = Field(min_length=12, max_length=200)
+
+
+class AccountProvisionInput(BaseModel):
+    username: str = Field(min_length=3, max_length=80)
+    password: str = Field(min_length=12, max_length=200)
+    role: str = Field(pattern="^(Administrator|Lecturer|Student)$")
+    student_id: int | None = Field(default=None, gt=0)
+    lecturer_id: int | None = Field(default=None, gt=0)
+
+
+class GradeEntry(BaseModel):
+    student_id: int = Field(gt=0)
+    score: float = Field(ge=0, le=100)
+
+
+class GradeRosterInput(BaseModel):
+    grades: list[GradeEntry] = Field(min_length=1, max_length=500)
 
 
 class DepartmentInput(BaseModel):
@@ -107,6 +140,45 @@ def startup() -> None:
     # Enable this only in isolated tests/development environments.
     if os.getenv("CAMPUSBOOK_AUTO_MIGRATE", "").lower() == "true":
         initialize_database()
+
+
+def _session_digest(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _issue_session(db: psycopg.Connection, user_id: int, response: Response) -> None:
+    token = secrets.token_urlsafe(48)
+    now = datetime.now(timezone.utc)
+    db.execute(
+        "INSERT INTO user_sessions (user_id,token_hash,created_at,expires_at) VALUES (%s,%s,%s,%s)",
+        (user_id,_session_digest(token),now,now+timedelta(hours=SESSION_HOURS)),
+    )
+    response.set_cookie("campusbook_session",token,httponly=True,secure=True,samesite="none",max_age=SESSION_HOURS*3600,path="/")
+
+
+def get_current_user(request: Request) -> dict[str, Any]:
+    token = request.cookies.get("campusbook_session")
+    if not token:
+        auth = request.headers.get("authorization","")
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+    if not token:
+        raise HTTPException(status_code=401,detail="Sign in to continue.")
+    with connect() as db:
+        user=db.execute(
+            """SELECT u.id,u.username,u.role,u.student_id,u.lecturer_id
+            FROM user_sessions s JOIN user_accounts u ON u.id=s.user_id
+            WHERE s.token_hash=%s AND s.revoked_at IS NULL AND s.expires_at>%s AND u.is_active=TRUE""",
+            (_session_digest(token),datetime.now(timezone.utc)),
+        ).fetchone()
+    if not user:
+        raise HTTPException(status_code=401,detail="Your session has expired. Sign in again.")
+    return user
+
+
+def require_roles(user: dict[str, Any], *roles: str) -> None:
+    if user["role"] not in roles:
+        raise HTTPException(status_code=403,detail="You do not have permission to perform this action.")
 
 
 def _json_value(value: Any) -> Any:
@@ -170,7 +242,8 @@ def health() -> dict[str, str]:
 
 
 @app.get("/api/dashboard")
-def dashboard() -> dict[str, Any]:
+def dashboard(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    require_roles(user, 'Administrator')
     with connect() as db:
         total = db.execute("SELECT COUNT(*) AS count FROM students").fetchone()["count"]
         active = db.execute("SELECT COUNT(*) AS count FROM students WHERE status='Active'").fetchone()["count"]
@@ -193,7 +266,8 @@ def dashboard() -> dict[str, Any]:
 
 
 @app.get("/api/students")
-def list_students(search: str = Query(default="", max_length=100)) -> list[dict[str, Any]]:
+def list_students(search: str = Query(default="", max_length=100), user: dict[str, Any] = Depends(get_current_user)) -> list[dict[str, Any]]:
+    require_roles(user, 'Administrator')
     term = f"%{search.strip()}%"
     with connect() as db:
         rows = db.execute(
@@ -207,7 +281,8 @@ def list_students(search: str = Query(default="", max_length=100)) -> list[dict[
 
 
 @app.post("/api/students", status_code=201)
-def create_student(student: StudentInput) -> dict[str, Any]:
+def create_student(student: StudentInput, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    require_roles(user, 'Administrator')
     with connect() as db:
         try:
             row = db.execute(
@@ -227,7 +302,8 @@ def create_student(student: StudentInput) -> dict[str, Any]:
 
 
 @app.put("/api/students/{student_id}")
-def update_student(student_id: int, student: StudentInput) -> dict[str, Any]:
+def update_student(student_id: int, student: StudentInput, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    require_roles(user, 'Administrator')
     with connect() as db:
         try:
             row = db.execute(
@@ -245,7 +321,8 @@ def update_student(student_id: int, student: StudentInput) -> dict[str, Any]:
 
 
 @app.delete("/api/students/{student_id}")
-def delete_student(student_id: int) -> dict[str, bool]:
+def delete_student(student_id: int, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, bool]:
+    require_roles(user, 'Administrator')
     with connect() as db:
         row = db.execute("DELETE FROM students WHERE id=%s RETURNING id", (student_id,)).fetchone()
         if not row:
@@ -255,7 +332,8 @@ def delete_student(student_id: int) -> dict[str, bool]:
 
 
 @app.get("/api/departments")
-def list_departments() -> list[dict[str, Any]]:
+def list_departments(user: dict[str, Any] = Depends(get_current_user)) -> list[dict[str, Any]]:
+    require_roles(user, 'Administrator', 'Lecturer', 'Student')
     with connect() as db:
         rows = db.execute(
             """SELECT d.*, COUNT(s.id)::int AS student_count FROM departments d
@@ -265,7 +343,8 @@ def list_departments() -> list[dict[str, Any]]:
 
 
 @app.post("/api/departments", status_code=201)
-def create_department(department: DepartmentInput) -> dict[str, Any]:
+def create_department(department: DepartmentInput, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    require_roles(user, 'Administrator')
     with connect() as db:
         try:
             row = db.execute(
@@ -279,7 +358,8 @@ def create_department(department: DepartmentInput) -> dict[str, Any]:
 
 
 @app.get("/api/results")
-def list_results() -> list[dict[str, Any]]:
+def list_results(user: dict[str, Any] = Depends(get_current_user)) -> list[dict[str, Any]]:
+    require_roles(user, 'Administrator')
     with connect() as db:
         rows = db.execute(
             """SELECT r.*, s.matric_number, s.first_name, s.last_name
@@ -289,7 +369,8 @@ def list_results() -> list[dict[str, Any]]:
 
 
 @app.post("/api/results", status_code=201)
-def create_result(result: ResultInput) -> dict[str, Any]:
+def create_result(result: ResultInput, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    require_roles(user, 'Administrator')
     with connect() as db:
         try:
             row = db.execute(
@@ -309,7 +390,8 @@ def create_result(result: ResultInput) -> dict[str, Any]:
 
 
 @app.delete("/api/results/{result_id}")
-def delete_result(result_id: int) -> dict[str, bool]:
+def delete_result(result_id: int, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, bool]:
+    require_roles(user, 'Administrator')
     with connect() as db:
         row = db.execute("DELETE FROM results WHERE id=%s RETURNING id", (result_id,)).fetchone()
         if not row:
@@ -319,7 +401,8 @@ def delete_result(result_id: int) -> dict[str, bool]:
 
 
 @app.post("/api/backups")
-def create_backup() -> dict[str, Any]:
+def create_backup(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    require_roles(user, 'Administrator')
     with connect() as db:
         snapshot = _snapshot_tables(db)
         filename = _store_snapshot(db, snapshot)
@@ -334,7 +417,8 @@ def create_backup() -> dict[str, Any]:
 
 
 @app.get("/api/backups")
-def list_backups() -> list[dict[str, Any]]:
+def list_backups(user: dict[str, Any] = Depends(get_current_user)) -> list[dict[str, Any]]:
+    require_roles(user, 'Administrator')
     with connect() as db:
         rows = db.execute(
             """SELECT filename, octet_length(snapshot::text) AS size_bytes, created_at AS modified_at
@@ -344,7 +428,8 @@ def list_backups() -> list[dict[str, Any]]:
 
 
 @app.post("/api/backups/{filename}/restore")
-def restore_backup(filename: str) -> dict[str, Any]:
+def restore_backup(filename: str, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    require_roles(user, 'Administrator')
     if not re.fullmatch(r"campusbook-[0-9]{8}-[0-9]{6}-[0-9]{6}\.json", filename):
         raise HTTPException(status_code=400, detail="Invalid backup filename.")
     with connect() as db:
@@ -409,9 +494,229 @@ def restore_backup(filename: str) -> dict[str, Any]:
 
 
 @app.get("/api/activity")
-def activity() -> list[dict[str, Any]]:
+def activity(user: dict[str, Any] = Depends(get_current_user)) -> list[dict[str, Any]]:
+    require_roles(user, 'Administrator')
     with connect() as db:
         rows = db.execute(
             "SELECT * FROM activity_logs ORDER BY id DESC LIMIT 100"
         ).fetchall()
     return rows
+
+
+@app.post("/api/auth/bootstrap",status_code=201)
+def bootstrap_admin(payload:BootstrapInput,response:Response,x_bootstrap_secret:str|None=Header(default=None,alias="X-CampusBook-Bootstrap-Secret")):
+    expected=os.getenv("CAMPUSBOOK_BOOTSTRAP_SECRET","")
+    if not expected or not x_bootstrap_secret or not secrets.compare_digest(expected,x_bootstrap_secret):
+        raise HTTPException(status_code=404,detail="Bootstrap is unavailable.")
+    with connect() as db:
+        count=db.execute("SELECT COUNT(*) AS count FROM user_accounts WHERE role='Administrator'").fetchone()["count"]
+        if count: raise HTTPException(status_code=409,detail="The initial administrator has already been created.")
+        user=db.execute("INSERT INTO user_accounts (username,password_hash,role) VALUES (%s,%s,'Administrator') RETURNING id,username,role",(payload.username.strip(),PASSWORD_HASHER.hash(payload.password))).fetchone()
+        _issue_session(db,user["id"],response)
+    return user
+
+
+@app.post("/api/auth/login")
+def login(payload:LoginInput,response:Response):
+    with connect() as db:
+        user=db.execute("SELECT id,username,password_hash,role,student_id,lecturer_id,is_active FROM user_accounts WHERE username=%s",(payload.username.strip(),)).fetchone()
+        if not user or not user["is_active"]: raise HTTPException(status_code=401,detail="Username or password is incorrect.")
+        try: PASSWORD_HASHER.verify(user["password_hash"],payload.password)
+        except (VerifyMismatchError,VerificationError,InvalidHashError): raise HTTPException(status_code=401,detail="Username or password is incorrect.")
+        _issue_session(db,user["id"],response)
+    return {k:user[k] for k in ("id","username","role","student_id","lecturer_id")}
+
+
+@app.post("/api/auth/logout")
+def logout(request:Request,response:Response):
+    token=request.cookies.get("campusbook_session")
+    if token:
+        with connect() as db: db.execute("UPDATE user_sessions SET revoked_at=%s WHERE token_hash=%s AND revoked_at IS NULL",(datetime.now(timezone.utc),_session_digest(token)))
+    response.delete_cookie("campusbook_session",path="/",secure=True,httponly=True,samesite="none")
+    return {"logged_out":True}
+
+
+@app.get("/api/auth/me")
+def auth_me(user:dict[str,Any]=Depends(get_current_user)): return user
+
+
+@app.post("/api/admin/accounts",status_code=201)
+def provision_account(payload:AccountProvisionInput,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    if payload.role=="Student" and (payload.student_id is None or payload.lecturer_id is not None): raise HTTPException(status_code=422,detail="A student account must link to one student record.")
+    if payload.role=="Lecturer" and (payload.lecturer_id is None or payload.student_id is not None): raise HTTPException(status_code=422,detail="A lecturer account must link to one lecturer record.")
+    if payload.role=="Administrator" and (payload.student_id is not None or payload.lecturer_id is not None): raise HTTPException(status_code=422,detail="Administrator accounts cannot link to student or lecturer records.")
+    with connect() as db:
+        try:
+            row=db.execute("INSERT INTO user_accounts (username,password_hash,role,student_id,lecturer_id) VALUES (%s,%s,%s,%s,%s) RETURNING id,username,role,student_id,lecturer_id,is_active",(payload.username.strip(),PASSWORD_HASHER.hash(payload.password),payload.role,payload.student_id,payload.lecturer_id)).fetchone()
+        except psycopg.errors.UniqueViolation as exc: raise HTTPException(status_code=409,detail="Username or linked account already exists.") from exc
+        log_action(db,"Account provisioned",f"{payload.role} account {payload.username.strip()}")
+    return row
+
+
+@app.get("/api/faculties")
+def list_faculties(user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator","Lecturer","Student")
+    with connect() as db:
+        return db.execute("SELECT f.id,f.name,f.code,COUNT(DISTINCT d.id)::int AS department_count FROM faculties f LEFT JOIN departments d ON d.faculty_id=f.id GROUP BY f.id ORDER BY f.name").fetchall()
+
+
+@app.get("/api/course-offerings")
+def browse_course_offerings(user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator","Lecturer","Student")
+    with connect() as db:
+        if user["role"]=="Student":
+            return db.execute(
+                """SELECT o.id,o.section,o.status,c.course_code,c.title AS course_title,c.credit_units,c.level,
+                d.name AS department,s.name AS semester,a.name AS academic_session,
+                l.first_name AS lecturer_first_name,l.last_name AS lecturer_last_name
+                FROM course_offerings o JOIN courses c ON c.id=o.course_id JOIN departments d ON d.id=c.department_id
+                JOIN semesters s ON s.id=o.semester_id JOIN academic_sessions a ON a.id=s.academic_session_id
+                LEFT JOIN lecturers l ON l.id=o.lecturer_id
+                JOIN students st ON st.id=%s AND st.department=d.name AND st.level=c.level
+                WHERE o.status='Open' AND st.status='Active'
+                AND (s.registration_opens_at IS NULL OR s.registration_opens_at<=NOW())
+                AND (s.registration_closes_at IS NULL OR s.registration_closes_at>=NOW())
+                ORDER BY a.name DESC,s.name,c.course_code""",(user["student_id"],)).fetchall()
+        if user["role"]=="Lecturer":
+            return db.execute(
+                """SELECT o.id,o.section,o.status,c.course_code,c.title AS course_title,c.credit_units,c.level,d.name AS department,
+                s.name AS semester,a.name AS academic_session FROM course_offerings o
+                JOIN courses c ON c.id=o.course_id JOIN departments d ON d.id=c.department_id
+                JOIN semesters s ON s.id=o.semester_id JOIN academic_sessions a ON a.id=s.academic_session_id
+                WHERE o.lecturer_id=%s ORDER BY a.name DESC,s.name,c.course_code""",(user["lecturer_id"],)).fetchall()
+        return db.execute(
+            """SELECT o.id,o.section,o.status,c.course_code,c.title AS course_title,c.credit_units,c.level,d.name AS department,
+            s.name AS semester,a.name AS academic_session,o.lecturer_id FROM course_offerings o
+            JOIN courses c ON c.id=o.course_id JOIN departments d ON d.id=c.department_id
+            JOIN semesters s ON s.id=o.semester_id JOIN academic_sessions a ON a.id=s.academic_session_id
+            ORDER BY a.name DESC,s.name,c.course_code""").fetchall()
+
+
+@app.post("/api/student/course-offerings/{offering_id}/register",status_code=201)
+def register_for_course(offering_id:int,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Student")
+    with connect() as db:
+        offering=db.execute(
+            """SELECT o.id,o.capacity,o.status,c.level,d.name AS department,
+            st.department AS student_department,st.level AS student_level,st.status AS student_status,
+            s.registration_opens_at,s.registration_closes_at FROM course_offerings o
+            JOIN courses c ON c.id=o.course_id JOIN departments d ON d.id=c.department_id
+            JOIN semesters s ON s.id=o.semester_id JOIN students st ON st.id=%s WHERE o.id=%s""",
+            (user["student_id"],offering_id)).fetchone()
+        if not offering: raise HTTPException(status_code=404,detail="Course offering not found.")
+        now=datetime.now(timezone.utc)
+        if offering["status"]!="Open" or offering["student_status"]!="Active": raise HTTPException(status_code=409,detail="This course is not open for registration.")
+        if offering["department"]!=offering["student_department"] or offering["level"]!=offering["student_level"]: raise HTTPException(status_code=403,detail="This course is not available for your department or level.")
+        if offering["registration_opens_at"] and offering["registration_opens_at"]>now: raise HTTPException(status_code=409,detail="Registration has not opened.")
+        if offering["registration_closes_at"] and offering["registration_closes_at"]<now: raise HTTPException(status_code=409,detail="Registration has closed.")
+        count=db.execute("SELECT COUNT(*) AS count FROM course_registrations WHERE course_offering_id=%s AND status='Registered'",(offering_id,)).fetchone()["count"]
+        if offering["capacity"] is not None and count>=offering["capacity"]: raise HTTPException(status_code=409,detail="This course offering is full.")
+        try: row=db.execute("INSERT INTO course_registrations (course_offering_id,student_id,status) VALUES (%s,%s,'Registered') RETURNING id,course_offering_id,student_id,status,registered_at",(offering_id,user["student_id"])).fetchone()
+        except psycopg.errors.UniqueViolation as exc: raise HTTPException(status_code=409,detail="You are already registered for this course.") from exc
+        log_action(db,"Course registered",f"Student ID {user['student_id']} registered for offering {offering_id}")
+    return row
+
+
+@app.delete("/api/student/course-offerings/{offering_id}/register")
+def drop_course(offering_id:int,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Student")
+    with connect() as db:
+        row=db.execute(
+            """UPDATE course_registrations cr SET status='Dropped',dropped_at=NOW()
+            FROM course_offerings o JOIN semesters s ON s.id=o.semester_id
+            WHERE cr.course_offering_id=o.id AND cr.student_id=%s AND o.id=%s AND cr.status='Registered'
+            AND (s.registration_closes_at IS NULL OR s.registration_closes_at>=NOW()) RETURNING cr.id""",
+            (user["student_id"],offering_id)).fetchone()
+        if not row: raise HTTPException(status_code=409,detail="This registration cannot be dropped now.")
+        log_action(db,"Course dropped",f"Student ID {user['student_id']} dropped offering {offering_id}")
+    return {"dropped":True}
+
+
+@app.get("/api/student/registrations")
+def student_registrations(user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Student")
+    with connect() as db:
+        return db.execute(
+            """SELECT cr.id,cr.status,cr.registered_at,c.course_code,c.title AS course_title,c.credit_units,
+            s.name AS semester,a.name AS academic_session,o.section FROM course_registrations cr
+            JOIN course_offerings o ON o.id=cr.course_offering_id JOIN courses c ON c.id=o.course_id
+            JOIN semesters s ON s.id=o.semester_id JOIN academic_sessions a ON a.id=s.academic_session_id
+            WHERE cr.student_id=%s ORDER BY a.name DESC,s.name,c.course_code""",(user["student_id"],)).fetchall()
+
+
+@app.get("/api/lecturer/offerings/{offering_id}/roster")
+def lecturer_roster(offering_id:int,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Lecturer")
+    with connect() as db:
+        assigned=db.execute("SELECT id FROM course_offerings WHERE id=%s AND lecturer_id=%s",(offering_id,user["lecturer_id"])).fetchone()
+        if not assigned: raise HTTPException(status_code=404,detail="Assigned course offering not found.")
+        return db.execute(
+            """SELECT st.id AS student_id,st.matric_number,st.first_name,st.last_name,cr.id AS registration_id,
+            cr.status AS registration_status,g.score,g.status AS grade_status FROM course_registrations cr
+            JOIN students st ON st.id=cr.student_id LEFT JOIN course_grades g ON g.registration_id=cr.id
+            WHERE cr.course_offering_id=%s AND cr.status='Registered' ORDER BY st.matric_number""",(offering_id,)).fetchall()
+
+
+@app.put("/api/lecturer/offerings/{offering_id}/grades")
+def save_grade_roster(offering_id:int,payload:GradeRosterInput,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Lecturer")
+    ids=[g.student_id for g in payload.grades]
+    if len(ids)!=len(set(ids)): raise HTTPException(status_code=422,detail="Uploaded roster contains duplicate students.")
+    with connect() as db:
+        assigned=db.execute("SELECT id FROM course_offerings WHERE id=%s AND lecturer_id=%s",(offering_id,user["lecturer_id"])).fetchone()
+        if not assigned: raise HTTPException(status_code=404,detail="Assigned course offering not found.")
+        rows=db.execute("SELECT id,student_id FROM course_registrations WHERE course_offering_id=%s AND status='Registered' AND student_id=ANY(%s)",(offering_id,ids)).fetchall()
+        mapping={r["student_id"]:r["id"] for r in rows}
+        if len(mapping)!=len(ids): raise HTTPException(status_code=422,detail="One or more students are not on this course roster.")
+        for grade in payload.grades:
+            rid=mapping[grade.student_id]
+            existing=db.execute("SELECT status FROM course_grades WHERE registration_id=%s",(rid,)).fetchone()
+            if existing and existing["status"] in ("Submitted","Approved","Published"): raise HTTPException(status_code=409,detail="Submitted or approved grades cannot be edited.")
+            db.execute(
+                """INSERT INTO course_grades (registration_id,score,status,entered_by,updated_at) VALUES (%s,%s,'Draft',%s,NOW())
+                ON CONFLICT (registration_id) DO UPDATE SET score=EXCLUDED.score,status='Draft',entered_by=EXCLUDED.entered_by,updated_at=NOW()""",
+                (rid,grade.score,user["id"]))
+        log_action(db,"Grade roster saved",f"Lecturer ID {user['lecturer_id']} saved {len(ids)} grades for offering {offering_id}")
+    return {"saved":len(ids),"status":"Draft"}
+
+
+@app.post("/api/lecturer/offerings/{offering_id}/submit")
+def submit_grade_roster(offering_id:int,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Lecturer")
+    with connect() as db:
+        assigned=db.execute("SELECT id FROM course_offerings WHERE id=%s AND lecturer_id=%s",(offering_id,user["lecturer_id"])).fetchone()
+        if not assigned: raise HTTPException(status_code=404,detail="Assigned course offering not found.")
+        counts=db.execute(
+            """SELECT COUNT(*) FILTER (WHERE cr.status='Registered') AS roster_count,
+            COUNT(g.id) FILTER (WHERE cr.status='Registered' AND g.status='Draft') AS draft_count
+            FROM course_registrations cr LEFT JOIN course_grades g ON g.registration_id=cr.id WHERE cr.course_offering_id=%s""",
+            (offering_id,)).fetchone()
+        if counts["roster_count"]==0 or counts["roster_count"]!=counts["draft_count"]: raise HTTPException(status_code=409,detail="Every registered student needs a draft grade before submission.")
+        db.execute("UPDATE course_grades g SET status='Submitted',submitted_at=NOW(),updated_at=NOW() FROM course_registrations cr WHERE cr.id=g.registration_id AND cr.course_offering_id=%s AND g.status='Draft'",(offering_id,))
+        log_action(db,"Grade roster submitted",f"Lecturer ID {user['lecturer_id']} submitted offering {offering_id}")
+    return {"submitted":True,"status":"Submitted"}
+
+
+@app.post("/api/admin/offerings/{offering_id}/approve")
+def approve_grade_roster(offering_id:int,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        result=db.execute("UPDATE course_grades g SET status='Published',approved_at=NOW(),updated_at=NOW() FROM course_registrations cr WHERE cr.id=g.registration_id AND cr.course_offering_id=%s AND g.status='Submitted'",(offering_id,))
+        if result.rowcount==0: raise HTTPException(status_code=409,detail="No submitted grades are available for approval.")
+        log_action(db,"Grade roster published",f"Administrator published offering {offering_id}")
+    return {"published":True,"grades_published":result.rowcount}
+
+
+@app.get("/api/student/results")
+def student_results(user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Student")
+    with connect() as db:
+        return db.execute(
+            """SELECT c.course_code,c.title AS course_title,g.score,g.letter_grade,g.status,
+            s.name AS semester,a.name AS academic_session FROM course_grades g
+            JOIN course_registrations cr ON cr.id=g.registration_id JOIN course_offerings o ON o.id=cr.course_offering_id
+            JOIN courses c ON c.id=o.course_id JOIN semesters s ON s.id=o.semester_id
+            JOIN academic_sessions a ON a.id=s.academic_session_id
+            WHERE cr.student_id=%s AND g.status='Published' ORDER BY a.name DESC,s.name,c.course_code""",
+            (user["student_id"],)).fetchall()
