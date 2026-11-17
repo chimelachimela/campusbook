@@ -366,6 +366,8 @@ def list_students(search: str = Query(default="", max_length=100), user: dict[st
 @app.post("/api/students", status_code=201)
 def create_student(student: StudentInput, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     require_roles(user, 'Administrator')
+    if not re.fullmatch(r"DE/[0-9]{4}/[0-9]{4}",student.matric_number.strip().upper()):
+        raise HTTPException(status_code=422,detail="Matriculation number must follow DE/YYYY/NNNN, for example DE/2023/0001.")
     with connect() as db:
         department = db.execute("SELECT id FROM departments WHERE name=%s",(student.department,)).fetchone()
         if not department:
@@ -389,6 +391,11 @@ def create_student(student: StudentInput, user: dict[str, Any] = Depends(get_cur
 def update_student(student_id: int, student: StudentInput, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     require_roles(user, 'Administrator')
     with connect() as db:
+        existing_student=db.execute("SELECT matric_number FROM students WHERE id=%s",(student_id,)).fetchone()
+        if not existing_student:
+            raise HTTPException(status_code=404,detail="Student not found.")
+        if student.matric_number.strip().upper()!=existing_student["matric_number"] and not re.fullmatch(r"DE/[0-9]{4}/[0-9]{4}",student.matric_number.strip().upper()):
+            raise HTTPException(status_code=422,detail="Matriculation number must follow DE/YYYY/NNNN, for example DE/2023/0001.")
         department = db.execute("SELECT id FROM departments WHERE name=%s",(student.department,)).fetchone()
         if not department:
             raise HTTPException(status_code=404,detail="Department not found.")
