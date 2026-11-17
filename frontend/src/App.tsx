@@ -39,6 +39,8 @@ export default function App(){
   const [backups,setBackups]=useState<Backup[]>([]);
   const [activity,setActivity]=useState<ActivityItem[]>([]);
   const [search,setSearch]=useState('');
+  const [studentStatus,setStudentStatus]=useState('All');
+  const [studentDepartment,setStudentDepartment]=useState('All');
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState('');
   const [notice,setNotice]=useState('');
@@ -66,9 +68,12 @@ export default function App(){
   useEffect(()=>{void refresh();},[]);
   useEffect(()=>{if(!notice)return;const t=window.setTimeout(()=>setNotice(''),4000);return()=>window.clearTimeout(t);},[notice]);
 
-  const filteredStudents=useMemo(()=>students.filter(s=>
-    [s.first_name,s.last_name,s.matric_number,s.department,s.email].join(' ').toLowerCase().includes(search.toLowerCase())
-  ),[students,search]);
+  const filteredStudents=useMemo(()=>students.filter(s=>{
+    const matchesSearch=[s.first_name,s.last_name,s.matric_number,s.department,s.email].join(' ').toLowerCase().includes(search.toLowerCase());
+    const matchesStatus=studentStatus==='All'||s.status===studentStatus;
+    const matchesDepartment=studentDepartment==='All'||s.department===studentDepartment;
+    return matchesSearch&&matchesStatus&&matchesDepartment;
+  }),[students,search,studentStatus,studentDepartment]);
 
   function openCreateStudent(){setEditingStudent(null);setStudentForm(emptyStudent);setStudentModal(true);}
   function openEditStudent(s:Student){setEditingStudent(s);setStudentForm({matric_number:s.matric_number,first_name:s.first_name,last_name:s.last_name,email:s.email,department:s.department,level:s.level,status:s.status});setStudentModal(true);}
@@ -139,7 +144,7 @@ export default function App(){
         </>}
         {page==='Students'&&<>
           <PageHeading eyebrow="RECORDS MANAGEMENT" title="Students" description="Manage student profiles and academic records." action={<button className="primary-button" onClick={openCreateStudent}><Plus size={17}/> Add student</button>}/>
-          <section className="panel table-panel"><div className="table-toolbar"><div><h2>All students <span className="count-pill">{students.length}</span></h2><p>Search, edit and manage registered students</p></div><div className="table-tools"><div className="search-box"><Search size={16}/><input placeholder="Search students..." value={search} onChange={e=>setSearch(e.target.value)}/></div><button className="filter-button" onClick={()=>setSearch('')}><SlidersHorizontal size={16}/> Clear</button></div></div><StudentTable rows={filteredStudents} onEdit={openEditStudent} onDelete={deleteStudent}/></section>
+          <section className="panel table-panel"><div className="table-toolbar"><div><h2>All students <span className="count-pill">{students.length}</span></h2><p>Search, edit and manage registered students</p></div><div className="table-tools"><div className="search-box"><Search size={16}/><input placeholder="Search name, matric no. or email" value={search} onChange={e=>setSearch(e.target.value)}/></div><select className="filter-select" aria-label="Filter by status" value={studentStatus} onChange={e=>setStudentStatus(e.target.value)}><option value="All">All statuses</option><option value="Active">Active</option><option value="Inactive">Inactive</option></select><select className="filter-select" aria-label="Filter by department" value={studentDepartment} onChange={e=>setStudentDepartment(e.target.value)}><option value="All">All departments</option>{departments.map(d=><option key={d.id} value={d.name}>{d.name}</option>)}</select><button className="filter-button" onClick={()=>{setSearch('');setStudentStatus('All');setStudentDepartment('All');}}><X size={15}/> Reset</button></div></div><div className="results-caption">Showing <b>{filteredStudents.length}</b> of <b>{students.length}</b> student records</div><StudentTable rows={filteredStudents} onEdit={openEditStudent} onDelete={deleteStudent}/></section>
         </>}
         {page==='Departments'&&<>
           <PageHeading eyebrow="ACADEMIC STRUCTURE" title="Departments" description="Manage academic departments and view their student counts." action={<button className="primary-button" onClick={()=>setDepartmentModal(true)}><Plus size={17}/> Add department</button>}/>
@@ -151,8 +156,8 @@ export default function App(){
         </>}
         {page==='Backup & Recovery'&&<>
           <PageHeading eyebrow="DATA PROTECTION" title="Backup & recovery" description="Protect your records with verified database snapshots." action={<button className="primary-button" onClick={()=>void createBackup()}><Plus size={17}/> Create backup</button>}/>
-          <div className="recovery-callout"><div className="callout-icon"><ShieldCheck size={21}/></div><div><b>Your database is ready for protection</b><p>Snapshots are created with SQLite's online backup API and checked for integrity before restoration.</p></div><span className="secure-pill"><i/> Integrity checks enabled</span></div>
-          <section className="panel table-panel"><div className="table-toolbar"><div><h2>Backup history <span className="count-pill">{backups.length}</span></h2><p>Snapshots stored on the application server</p></div><button className="filter-button" onClick={()=>void refresh()}><RefreshCw size={15}/> Refresh</button></div>
+          <div className="recovery-callout"><div className="callout-icon"><ShieldCheck size={21}/></div><div><b>Your database is ready for protection</b><p>Snapshots are stored in PostgreSQL, validated before restoration, and protected by a pre-restore safety snapshot.</p></div><span className="secure-pill"><i/> Integrity checks enabled</span></div>
+          <section className="panel table-panel"><div className="table-toolbar"><div><h2>Backup history <span className="count-pill">{backups.length}</span></h2><p>Snapshots stored in Neon PostgreSQL</p></div><button className="filter-button" onClick={()=>void refresh()}><RefreshCw size={15}/> Refresh</button></div>
             {backups.length?<div className="backup-list">{backups.map(b=><div className="backup-row" key={b.filename}><div className="file-icon"><Database size={19}/></div><div className="backup-file"><b>{b.filename}</b><span>{dateLabel(b.modified_at)} · {bytes(b.size_bytes)}</span></div><span className="verified"><Check size={14}/> Available</span><button className="restore-button" onClick={()=>void restoreBackup(b.filename)}><ArrowDownToLine size={15}/> Restore</button></div>)}</div>:<Empty icon={Database} title="No backups created yet" detail="Create your first snapshot to protect the student database."/>}
           </section>
           <div className="recovery-note"><ShieldCheck size={17}/><div><b>Recovery safety</b><span>The current database is preserved as a separate safety copy before a restore.</span></div></div>

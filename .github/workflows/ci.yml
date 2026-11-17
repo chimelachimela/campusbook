@@ -4,18 +4,35 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main, "feature/**"] 
+    branches: [main, "feature/**"]
 
 permissions:
   contents: read
 
 jobs:
   backend:
-    name: Backend tests
+    name: PostgreSQL backend tests
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: campusbook_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d campusbook_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     defaults:
       run:
         working-directory: backend
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/campusbook_test
+      CAMPUSBOOK_AUTO_MIGRATE: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,7 +41,9 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r requirements.txt
-      - run: pytest
+      - name: Create owner role required by migration defaults
+        run: psql "$DATABASE_URL" -c "CREATE ROLE campusbook_owner; CREATE ROLE campusbook_app;"
+      - run: pytest -v
 
   frontend:
     name: Frontend production build

@@ -1,86 +1,67 @@
 # CampusBook
 
-A client/server Student Records Management System with database backup and recovery.
-
-## Project status
-
-**Stage:** Initial MVP implementation on `feature/campusbook-mvp`.
-
-CampusBook demonstrates how a browser client communicates with an application server over HTTP, how the server manages persistent student records, and how an operator can back up and restore the database.
+A React + FastAPI student records management system backed by PostgreSQL.
 
 ## Architecture
 
 ```text
-React + TypeScript client
-        |
-        | HTTP / JSON (REST)
+React + TypeScript + Vite
+        | HTTPS / JSON
         v
-FastAPI application server
-        |
-        | SQL
+FastAPI application on Render
+        | psycopg / TLS
         v
-SQLite database
-        |
-        +---- Backup service ----> timestamped database snapshots
-        |
-        +---- Restore service <--- validated snapshot
+Neon PostgreSQL
+        +-- departments
+        +-- students
+        +-- results
+        +-- activity log
+        +-- logical JSON backup snapshots
 ```
 
-## Implemented in this branch
+## Features
 
-- Dashboard with live student, department, and backup counts
-- Student records: create, list, search, update, and delete
-- Department creation, directory, and student counts
-- Backup creation using SQLite's online backup API
-- Backup history with file sizes and timestamps
-- Restore flow with integrity validation and a pre-restore safety copy
-- Course result recording, listing, and deletion with score validation\n- Activity log entries for student, department, result, and backup operations
+- Dashboard with student, active-record, department, and backup counts
+- Student create, search, update, and delete
+- Department directory and student counts
+- Course result recording, listing, and deletion
+- Activity log
+- Logical JSONB database snapshots with validation and transactional restore
+- A pre-restore safety snapshot
 - Responsive React administration interface
-- API test covering student creation, deletion, backup, and restore
 
-## Technology
+## Database setup
 
-| Layer | Technology |
-| --- | --- |
-| Client | React, TypeScript, Vite |
-| API server | Python, FastAPI |
-| Database | SQLite |
-| API style | REST over HTTP with JSON |
-| Validation | Pydantic |
-| Tests | Pytest and FastAPI TestClient |
+The production database schema is in `backend/migrations/001_initial_postgres.sql`.
 
-## Run locally
+1. Create a Neon PostgreSQL project and database.
+2. Create a restricted runtime role (the deployment role should not own the schema).
+3. Connect as the database owner and apply the migration SQL once.
+4. Set `DATABASE_URL` on the API service to the runtime role's connection string.
+5. Do not set `CAMPUSBOOK_AUTO_MIGRATE=true` in production. The app role intentionally does not have schema-owner privileges.
 
-### 1. Start the backend
+The application uses `psycopg` and PostgreSQL. SQLite is no longer used by the deployed backend.
 
-From the repository root:
+## Local development
+
+### Backend
 
 ```bash
 cd backend
 python -m venv .venv
-```
-
-Activate the environment, then install dependencies:
-
-**Windows PowerShell**
-```powershell
-.venv\Scripts\Activate.ps1
+# Activate the virtual environment, then:
 pip install -r requirements.txt
-uvicorn app.main:app --reload
 ```
 
-**macOS / Linux**
+Set `DATABASE_URL` to a local PostgreSQL database and apply `migrations/001_initial_postgres.sql` as its owner. Then run:
+
 ```bash
-source .venv/bin/activate
-pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-The API runs at `http://localhost:8000`; interactive API documentation is at `http://localhost:8000/docs`.
+API documentation: `http://localhost:8000/docs`.
 
-### 2. Start the frontend
-
-In a second terminal, from the repository root:
+### Frontend
 
 ```bash
 cd frontend
@@ -88,31 +69,35 @@ npm install
 npm run dev
 ```
 
-Open the local URL printed by Vite (normally `http://localhost:5173`).
+Set `VITE_API_URL` to the API origin when building for deployment. The local default is `http://localhost:8000`.
 
-### 3. Run backend tests
+## Tests
 
-From the repository root, with the backend virtual environment active:
+Backend integration tests require a disposable PostgreSQL database in `DATABASE_URL`. They apply the schema migration, reset test tables, and exercise CRUD, department/result relationships, backup/restore, and activity logging.
 
 ```bash
 cd backend
-pytest
+pytest -v
 ```
 
-## Testing\n\nSee [docs/testing.md](docs/testing.md) for the automated test suite, manual acceptance checks, and recommended evidence to capture for the academic demonstration.\n\n## Backup and recovery demonstration
+Frontend production build:
 
-1. Start both the API and frontend.
-2. Add a student record.
-3. Open **Backup & Recovery** and create a snapshot.
-4. Delete the student record through the API docs at `/docs` (or the student delete endpoint).
-5. Confirm the record is gone.
-6. Restore the earlier snapshot from the Backup & Recovery page.
-7. Confirm the student record returns.
+```bash
+cd frontend
+npm install
+npm run build
+```
 
-A successful HTTP response alone is not proof of recovery: verify that the data itself has returned.
+GitHub Actions runs both checks, using a PostgreSQL 17 service for backend integration tests.
 
-## Current limitations
+## Backups and recovery
 
-This is an academic demonstration system, not a production student information system. Student and result workflows are implemented in the web interface. Department deletion, result editing, authentication, role-based authorization, production deployment hardening, backup retention, and off-site backup copies are not included in this academic MVP. Authentication, role-based authorization, production deployment hardening, backup retention, and off-site backup copies are also outside this initial MVP.
+The application stores logical JSONB snapshots in the same Neon database. Restores validate the snapshot, remap student IDs so foreign-key relationships remain correct, and create a pre-restore safety snapshot in the same transaction.
 
-Do not use real student personal data in this public academic demonstration repository.
+**Important limitation:** these in-database snapshots are for application-level recovery demonstrations, not independent disaster recovery. They do not protect against loss or deletion of the entire Neon project. Configure Neon-managed backups/restore or export snapshots to independent storage before using real institutional data.
+
+## Deployment
+
+The API and frontend are deployed as separate Render services. The API requires `DATABASE_URL` and `CAMPUSBOOK_CORS_ORIGINS`. The frontend requires `VITE_API_URL` at build time. Both services can use Render's free plan; free API services may sleep after inactivity.
+
+Do not use real student personal data in this public academic demonstration project.
