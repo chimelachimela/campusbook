@@ -2,7 +2,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://campusbook-api.vercel.app/api/:path*"
+      "destination": "https://campusbook-api-git-feature-final-campu-ad6f15-chimelas-projects.vercel.app/api/:path*"
     }
   ],
   "git": {
