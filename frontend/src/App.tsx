@@ -104,6 +104,7 @@ export default function App(){
   const [page,setPage]=useState('Overview');
   const [user,setUser]=useState<AuthUser|null>(null);
   const [authLoading,setAuthLoading]=useState(true);
+  const [authError,setAuthError]=useState('');
   const [loginUsername,setLoginUsername]=useState('');
   const [loginPassword,setLoginPassword]=useState('');
   const [loginError,setLoginError]=useState('');
@@ -154,7 +155,8 @@ export default function App(){
     }catch(e){setError(e instanceof Error?e.message:'Could not connect to the API.');}
     finally{setLoading(false);}
   }
-  useEffect(()=>{requestWithRetry<AuthUser>('/api/auth/me').then(setUser).catch(()=>setUser(null)).finally(()=>setAuthLoading(false));},[]);
+  async function checkSession(){setAuthLoading(true);setAuthError('');try{setUser(await requestWithRetry<AuthUser>('/api/auth/me'));}catch(e){if(e instanceof ApiError&&e.status===401){setUser(null);}else{setAuthError(e instanceof Error?e.message:'CampusBook could not connect.');}}finally{setAuthLoading(false);}}
+  useEffect(()=>{void checkSession();},[]);
   useEffect(()=>{if(user?.role==='Administrator')void refresh();},[user]);
   useEffect(()=>{if(!notice)return;const t=window.setTimeout(()=>setNotice(''),4000);return()=>window.clearTimeout(t);},[notice]);
 
@@ -216,6 +218,7 @@ export default function App(){
   }
 
   const nav=[{label:'Overview',icon:LayoutDashboard},{label:'Students',icon:Users},{label:'Departments',icon:Building2},{label:'Academic Setup',icon:BookOpen},{label:'Results',icon:BookOpen},{label:'Backup & Recovery',icon:Database},{label:'Activity Log',icon:Activity}];
+  if(authError)return <div className="auth-screen"><div className="auth-card"><div className="portal-brand"><div className="brand-mark"><GraduationCap size={21}/></div><span>campus<span className="brand-light">book</span></span></div><h1>Connecting to CampusBook</h1><p className="auth-description">{authError}</p><p className="auth-description">The service may be waking up. CampusBook already tried reconnecting automatically.</p><button className="primary-button" onClick={()=>void checkSession()}>Try again</button></div></div>;
   if(authLoading)return <div className="auth-screen"><div className="auth-card"><div className="portal-brand"><div className="brand-mark"><GraduationCap size={21}/></div><span>campus<span className="brand-light">book</span></span></div><p>Checking your session…</p></div></div>;
   if(!user)return <div className="auth-screen"><form className="auth-card" onSubmit={submitLogin}><div className="portal-brand"><div className="brand-mark"><GraduationCap size={21}/></div><span>campus<span className="brand-light">book</span></span></div><p className="eyebrow">STUDENT RECORDS & COURSE REGISTRATION</p><h1>Sign in to CampusBook</h1><p className="auth-description">Use the account provided by your institution.</p>{loginError&&<div className="portal-error">{loginError}</div>}<label>Username<input autoComplete="username" value={loginUsername} onChange={e=>setLoginUsername(e.target.value)} required/></label><label>Password<input type="password" autoComplete="current-password" value={loginPassword} onChange={e=>setLoginPassword(e.target.value)} required/></label><button className="primary-button" type="submit">Sign in</button><small>Accounts are created by the institution. Public sign-up is disabled.</small></form></div>;
   if(user.role==='Student')return <StudentPortal user={user} onLogout={()=>void signOut()}/>;
