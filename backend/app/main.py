@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -53,12 +54,21 @@ class ResultInput(BaseModel):
     semester: str = Field(min_length=3, max_length=40)
 
 
-def connect() -> sqlite3.Connection:
+@contextmanager
+def connect():
+    """Yield a configured connection and always close it after the transaction."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
-    return connection
+    try:
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def log_action(connection: sqlite3.Connection, action: str, details: str) -> None:
@@ -336,7 +346,7 @@ def restore_backup(filename: str) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="Backup is not a valid SQLite database.") from exc
     finally:
         check.close()
-    if integrity != "ok" or not {"students", "departments", "activity_logs"}.issubset(required):
+    if integrity != "ok" or not {"students", "departments", "results", "activity_logs"}.issubset(required):
         raise HTTPException(status_code=422, detail="Backup validation failed; database was not changed.")
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     # Preserve the current database before replacing it, so a failed restore is recoverable.
