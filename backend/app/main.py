@@ -45,6 +45,14 @@ class DepartmentInput(BaseModel):
     code: str = Field(min_length=2, max_length=12)
 
 
+class ResultInput(BaseModel):
+    student_id: int = Field(gt=0)
+    course_code: str = Field(min_length=2, max_length=20)
+    course_title: str = Field(min_length=2, max_length=120)
+    score: float = Field(ge=0, le=100)
+    semester: str = Field(min_length=3, max_length=40)
+
+
 def connect() -> sqlite3.Connection:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_PATH)
@@ -245,10 +253,40 @@ def list_results() -> list[dict[str, Any]]:
     return [row_dict(r) for r in rows]
 
 
+@app.post("/api/results", status_code=201)
+def create_result(result: ResultInput) -> dict[str, Any]:
+    with connect() as db:
+        student = db.execute("SELECT id FROM students WHERE id=?", (result.student_id,)).fetchone()
+        if not student:
+            raise HTTPException(status_code=404, detail="Student not found.")
+        cursor = db.execute(
+            """INSERT INTO results (student_id, course_code, course_title, score, semester)
+            VALUES (?, ?, ?, ?, ?)""",
+            (result.student_id, result.course_code.upper(), result.course_title, result.score, result.semester),
+        )
+        log_action(db, "Result recorded", f"{result.course_code.upper()} for student ID {result.student_id}")
+        row = db.execute(
+            """SELECT r.*, s.matric_number, s.first_name, s.last_name
+            FROM results r JOIN students s ON s.id=r.student_id WHERE r.id=?""",
+            (cursor.lastrowid,),
+        ).fetchone()
+    return row_dict(row)
+
+
+@app.delete("/api/results/{result_id}")
+def delete_result(result_id: int) -> dict[str, bool]:
+    with connect() as db:
+        cursor = db.execute("DELETE FROM results WHERE id=?", (result_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Result not found.")
+        log_action(db, "Result deleted", f"Result ID {result_id}")
+    return {"deleted": True}
+
+
 @app.post("/api/backups")
 def create_backup() -> dict[str, Any]:
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
     destination = BACKUP_DIR / f"campusbook-{timestamp}.db"
     # SQLite's backup API produces a consistent snapshot, even if the DB is in use.
     source = sqlite3.connect(DB_PATH)
