@@ -350,7 +350,7 @@ def restore_backup(filename: str) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="Backup validation failed; database was not changed.")
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     # Preserve the current database before replacing it, so a failed restore is recoverable.
-    safety_copy = BACKUP_DIR / f"pre-restore-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.db"
+    safety_copy = BACKUP_DIR / f"pre-restore-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f')}.db"
     if DB_PATH.exists():
         shutil.copy2(DB_PATH, safety_copy)
     temp_path = DB_PATH.with_suffix(".restore.tmp")
