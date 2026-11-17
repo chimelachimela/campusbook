@@ -132,3 +132,22 @@ td{color:#35435a;font-size:12px}
 @media(max-width:800px){.setup-grid{grid-template-columns:1fr}}
 
 .demo-access{display:grid;gap:8px;padding:14px;border:1px solid #dbe5f1;border-radius:12px;background:#f7f9fc}.demo-access span{font-size:12px;color:#52647c;font-weight:650}.demo-access button{min-height:40px;border:1px solid #c8d5e5;border-radius:8px;background:#fff;color:#24456f;font:inherit;font-size:13px;font-weight:700;cursor:pointer}.demo-access button:hover{background:#edf3fa}
+
+
+/* Admin-first demo entry: retain the original CampusBook admin visual language. */
+.auth-card-home{width:min(100%,470px);gap:13px}
+.auth-card-home h1{margin-top:2px}
+.demo-access-primary{padding:16px;background:#f7f9fc}
+.demo-access-primary>button:first-of-type{background:#24456f;color:#fff;border-color:#24456f;min-height:46px}
+.demo-access-split{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.demo-access-split button{min-height:42px}
+.auth-secondary{border-top:1px solid #e8edf4;padding-top:12px}
+.auth-secondary summary{cursor:pointer;color:#40536e;font-size:12px;font-weight:700;list-style:none;display:flex;align-items:center;justify-content:space-between}
+.auth-secondary summary::-webkit-details-marker{display:none}
+.auth-secondary summary:after{content:'+';font-size:17px;color:#64748b}
+.auth-secondary[open] summary:after{content:'−'}
+.auth-secondary form{display:grid;gap:10px;margin-top:13px}
+.auth-secondary label{display:grid;gap:6px;font-size:12px;font-weight:650;color:#34445d}
+.auth-secondary input,.auth-secondary select{width:100%;min-height:40px;padding:8px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#1b2940;font:inherit}
+.auth-secondary .primary-button{min-height:40px}
+@media(max-width:600px){.auth-card-home{padding:22px}.auth-card-home h1{font-size:24px}}
