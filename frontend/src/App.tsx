@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import {
-  Activity, ArrowDownToLine, Bell, BookOpen, Building2, Check, ChevronDown,
-  ChevronRight, CircleHelp, Database, GraduationCap, LayoutDashboard, MoreHorizontal,
-  Plus, Search, Settings, ShieldCheck, SlidersHorizontal, Users, X, Pencil, Trash2,
+  Activity, ArrowDownToLine, BookOpen, Building2, Check, Menu,
+  ChevronRight, Database, GraduationCap, LayoutDashboard,
+  Plus, Search, ShieldCheck, Users, X, Pencil, Trash2,
   RefreshCw,
 } from 'lucide-react';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 type Student = {
-  id:number; matric_number:string; first_name:string; last_name:string; email:string;
+  id:number; matric_number:string; first_name:string; last_name:string;
   department:string; level:string; status:string; created_at:string;
 };
 type Department = {id:number;name:string;code:string;student_count:number};
@@ -25,13 +25,14 @@ async function request<T=any>(path:string, options?:RequestInit):Promise<T> {
   if(response.status===204)return undefined as T;
   return response.json();
 }
-const emptyStudent:StudentForm={matric_number:'',first_name:'',last_name:'',email:'',department:'Computer Engineering',level:'300',status:'Active'};
+const emptyStudent:StudentForm={matric_number:'',first_name:'',last_name:'',department:'Computer Engineering',level:'300',status:'Active'};
 const dateLabel=(v:string)=>new Date(v).toLocaleString([],{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'});
 const bytes=(n:number)=>n<1024?n+' B':(n/1024).toFixed(1)+' KB';
 const initials=(s:Student)=>(s.first_name[0]+s.last_name[0]).toUpperCase();
 
 export default function App(){
   const [page,setPage]=useState('Overview');
+  const [mobileNavOpen,setMobileNavOpen]=useState(false);
   const [dashboard,setDashboard]=useState<Dashboard|null>(null);
   const [students,setStudents]=useState<Student[]>([]);
   const [departments,setDepartments]=useState<Department[]>([]);
@@ -69,14 +70,14 @@ export default function App(){
   useEffect(()=>{if(!notice)return;const t=window.setTimeout(()=>setNotice(''),4000);return()=>window.clearTimeout(t);},[notice]);
 
   const filteredStudents=useMemo(()=>students.filter(s=>{
-    const matchesSearch=[s.first_name,s.last_name,s.matric_number,s.department,s.email].join(' ').toLowerCase().includes(search.toLowerCase());
+    const matchesSearch=[s.first_name,s.last_name,s.matric_number,s.department].join(' ').toLowerCase().includes(search.toLowerCase());
     const matchesStatus=studentStatus==='All'||s.status===studentStatus;
     const matchesDepartment=studentDepartment==='All'||s.department===studentDepartment;
     return matchesSearch&&matchesStatus&&matchesDepartment;
   }),[students,search,studentStatus,studentDepartment]);
 
   function openCreateStudent(){setEditingStudent(null);setStudentForm(emptyStudent);setStudentModal(true);}
-  function openEditStudent(s:Student){setEditingStudent(s);setStudentForm({matric_number:s.matric_number,first_name:s.first_name,last_name:s.last_name,email:s.email,department:s.department,level:s.level,status:s.status});setStudentModal(true);}
+  function openEditStudent(s:Student){setEditingStudent(s);setStudentForm({matric_number:s.matric_number,first_name:s.first_name,last_name:s.last_name,department:s.department,level:s.level,status:s.status});setStudentModal(true);}
   async function saveStudent(e:FormEvent){
     e.preventDefault();setSaving(true);
     try{
@@ -116,15 +117,16 @@ export default function App(){
 
   const nav=[{label:'Overview',icon:LayoutDashboard},{label:'Students',icon:Users},{label:'Departments',icon:Building2},{label:'Results',icon:BookOpen},{label:'Backup & Recovery',icon:Database},{label:'Activity Log',icon:Activity}];
   return <div className="app-shell">
-    <aside className="sidebar">
+    <aside className={'sidebar '+(mobileNavOpen?'mobile-open':'')}>
+      <div className="mobile-brand"><div className="brand-mark"><GraduationCap size={21}/></div><span>campus<span className="brand-light">book</span></span></div>
       <div className="brand"><div className="brand-mark"><GraduationCap size={21}/></div><span>campus<span className="brand-light">book</span></span></div>
-      <div className="workspace"><div className="workspace-avatar">RS</div><div><b>Rivers State University</b><small>Administration</small></div><ChevronDown size={15}/></div>
+      <div className="workspace"><div className="workspace-avatar">RS</div><div><b>Rivers State University</b><small>Academic records</small></div></div>
       <div className="nav-label">WORKSPACE</div>
-      <nav>{nav.map(item=><button key={item.label} className={'nav-item '+(page===item.label?'active':'')} onClick={()=>setPage(item.label)}><item.icon size={18}/><span>{item.label}</span>{item.label==='Backup & Recovery'&&<i className="nav-dot"/>}</button>)}</nav>
-      <div className="sidebar-bottom"><button className="nav-item"><Settings size={18}/>Settings</button><button className="nav-item"><CircleHelp size={18}/>Help & support</button><div className="profile"><div className="profile-avatar">CA</div><div><b>Campus Admin</b><small>Administrator</small></div><MoreHorizontal size={18}/></div></div>
+      <nav>{nav.map(item=><button key={item.label} className={'nav-item '+(page===item.label?'active':'')} onClick={()=>{setPage(item.label);setMobileNavOpen(false);}}><item.icon size={18}/><span>{item.label}</span>{item.label==='Backup & Recovery'&&<i className="nav-dot"/>}</button>)}</nav>
+      <div className="sidebar-bottom"><div className="profile"><div className="profile-avatar">CA</div><div><b>Campus Admin</b><small>Demo administrator</small></div></div></div>
     </aside>
     <main className="main">
-      <header className="topbar"><div className="breadcrumb"><span>Workspace</span><ChevronRight size={14}/><b>{page}</b></div><div className="top-actions"><div className="system-status"><i/>System operational</div><button className="icon-button"><Bell size={18}/></button><div className="top-avatar">CA</div></div></header>
+      <header className="topbar"><button className="mobile-menu-button" aria-label="Open navigation" onClick={()=>setMobileNavOpen(v=>!v)}><Menu size={20}/></button><div className="breadcrumb"><span>Workspace</span><ChevronRight size={14}/><b>{page}</b></div><div className="top-actions"><div className="system-status"><i/>System operational</div><div className="top-avatar">CA</div></div></header>
       <div className="content">
         {error&&<div className="error-banner"><Database size={17}/><div><b>Can't reach the CampusBook API</b><span>{error} Start FastAPI on port 8000, then retry.</span></div><button onClick={()=>void refresh()}>Retry</button></div>}
         {notice&&<div className="toast"><Check size={16}/>{notice}<button onClick={()=>setNotice('')}><X size={15}/></button></div>}
@@ -144,7 +146,7 @@ export default function App(){
         </>}
         {page==='Students'&&<>
           <PageHeading eyebrow="RECORDS MANAGEMENT" title="Students" description="Manage student profiles and academic records." action={<button className="primary-button" onClick={openCreateStudent}><Plus size={17}/> Add student</button>}/>
-          <section className="panel table-panel"><div className="table-toolbar"><div><h2>All students <span className="count-pill">{students.length}</span></h2><p>Search, edit and manage registered students</p></div><div className="table-tools"><div className="search-box"><Search size={16}/><input placeholder="Search name, matric no. or email" value={search} onChange={e=>setSearch(e.target.value)}/></div><select className="filter-select" aria-label="Filter by status" value={studentStatus} onChange={e=>setStudentStatus(e.target.value)}><option value="All">All statuses</option><option value="Active">Active</option><option value="Inactive">Inactive</option></select><select className="filter-select" aria-label="Filter by department" value={studentDepartment} onChange={e=>setStudentDepartment(e.target.value)}><option value="All">All departments</option>{departments.map(d=><option key={d.id} value={d.name}>{d.name}</option>)}</select><button className="filter-button" onClick={()=>{setSearch('');setStudentStatus('All');setStudentDepartment('All');}}><X size={15}/> Reset</button></div></div><div className="results-caption">Showing <b>{filteredStudents.length}</b> of <b>{students.length}</b> student records</div><StudentTable rows={filteredStudents} onEdit={openEditStudent} onDelete={deleteStudent}/></section>
+          <section className="panel table-panel"><div className="table-toolbar"><div><h2>All students <span className="count-pill">{students.length}</span></h2><p>Search, edit and manage registered students</p></div><div className="table-tools"><div className="search-box"><Search size={16}/><input placeholder="Search name or matric number" value={search} onChange={e=>setSearch(e.target.value)}/></div><select className="filter-select" aria-label="Filter by status" value={studentStatus} onChange={e=>setStudentStatus(e.target.value)}><option value="All">All statuses</option><option value="Active">Active</option><option value="Inactive">Inactive</option></select><select className="filter-select" aria-label="Filter by department" value={studentDepartment} onChange={e=>setStudentDepartment(e.target.value)}><option value="All">All departments</option>{departments.map(d=><option key={d.id} value={d.name}>{d.name}</option>)}</select><button className="filter-button" onClick={()=>{setSearch('');setStudentStatus('All');setStudentDepartment('All');}}><X size={15}/> Reset</button></div></div><div className="results-caption">Showing <b>{filteredStudents.length}</b> of <b>{students.length}</b> student records</div><StudentTable rows={filteredStudents} onEdit={openEditStudent} onDelete={deleteStudent}/></section>
         </>}
         {page==='Departments'&&<>
           <PageHeading eyebrow="ACADEMIC STRUCTURE" title="Departments" description="Manage academic departments and view their student counts." action={<button className="primary-button" onClick={()=>setDepartmentModal(true)}><Plus size={17}/> Add department</button>}/>
@@ -173,7 +175,7 @@ export default function App(){
       <label>First name<input required value={studentForm.first_name} onChange={e=>setStudentForm({...studentForm,first_name:e.target.value})}/></label>
       <label>Last name<input required value={studentForm.last_name} onChange={e=>setStudentForm({...studentForm,last_name:e.target.value})}/></label>
       <label className="full">Matriculation number<input required value={studentForm.matric_number} onChange={e=>setStudentForm({...studentForm,matric_number:e.target.value})} placeholder="e.g. RSU/2024/CPE/001"/></label>
-      <label className="full">Email address<input type="email" required value={studentForm.email} onChange={e=>setStudentForm({...studentForm,email:e.target.value})}/></label>
+      
       <label>Department<select value={studentForm.department} onChange={e=>setStudentForm({...studentForm,department:e.target.value})}>{departments.map(d=><option key={d.id}>{d.name}</option>)}</select></label>
       <label>Level<select value={studentForm.level} onChange={e=>setStudentForm({...studentForm,level:e.target.value})}>{['100','200','300','400','500'].map(v=><option key={v}>{v}</option>)}</select></label>
       <label>Status<select value={studentForm.status} onChange={e=>setStudentForm({...studentForm,status:e.target.value})}><option>Active</option><option>Inactive</option></select></label>
@@ -187,7 +189,7 @@ function grade(score:number){return score>=70?'A':score>=60?'B':score>=50?'C':sc
 function PageHeading({eyebrow,title,description,action}:{eyebrow:string;title:string;description:string;action?:ReactNode}){return <div className="page-heading"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action}</div>;}
 function Stat({icon:Icon,label,value,note,tone}:{icon:any;label:string;value:any;note:string;tone:string}){return <div className="stat-card"><div className={'stat-icon '+tone}><Icon size={19}/></div><div className="stat-label">{label}</div><div className="stat-value">{value}</div><div className="stat-note">{note}</div></div>;}
 function PanelHead({title,subtitle,action}:{title:string;subtitle:string;action?:ReactNode}){return <div className="panel-head"><div><h2>{title}</h2><p>{subtitle}</p></div>{action}</div>;}
-function StudentTable({rows,onEdit,onDelete}:{rows:Student[];onEdit:(s:Student)=>void;onDelete:(s:Student)=>void}){return <div className="table-wrap"><table><thead><tr><th>STUDENT</th><th>MATRIC NUMBER</th><th>DEPARTMENT</th><th>LEVEL</th><th>STATUS</th><th></th></tr></thead><tbody>{rows.map(s=><tr key={s.id}><td><div className="student-cell"><div className="student-avatar">{initials(s)}</div><div><b>{s.first_name} {s.last_name}</b><span>{s.email}</span></div></div></td><td className="mono">{s.matric_number}</td><td>{s.department}</td><td>{s.level} Level</td><td><span className={'status '+(s.status==='Active'?'status-active':'status-inactive')}><i/>{s.status}</span></td><td><div className="row-actions"><button className="row-action" title="Edit student" onClick={()=>onEdit(s)}><Pencil size={14}/></button><button className="row-action danger-action" title="Delete student" onClick={()=>void onDelete(s)}><Trash2 size={14}/></button></div></td></tr>)}</tbody></table>{!rows.length&&<Empty icon={Users} title="No student records" detail="Add a student to get started."/>}</div>;}
+function StudentTable({rows,onEdit,onDelete}:{rows:Student[];onEdit:(s:Student)=>void;onDelete:(s:Student)=>void}){return <div className="table-wrap"><table><thead><tr><th>STUDENT</th><th>MATRIC NUMBER</th><th>DEPARTMENT</th><th>LEVEL</th><th>STATUS</th><th></th></tr></thead><tbody>{rows.map(s=><tr key={s.id}><td><div className="student-cell"><div className="student-avatar">{initials(s)}</div><div><b>{s.first_name} {s.last_name}</b></div></div></td><td className="mono">{s.matric_number}</td><td>{s.department}</td><td>{s.level} Level</td><td><span className={'status '+(s.status==='Active'?'status-active':'status-inactive')}><i/>{s.status}</span></td><td><div className="row-actions"><button className="row-action" title="Edit student" onClick={()=>onEdit(s)}><Pencil size={14}/></button><button className="row-action danger-action" title="Delete student" onClick={()=>void onDelete(s)}><Trash2 size={14}/></button></div></td></tr>)}</tbody></table>{!rows.length&&<Empty icon={Users} title="No student records" detail="Add a student to get started."/>}</div>;}
 function ActivityList({rows}:{rows:ActivityItem[]}){return rows.length?<div className="activity-list">{rows.map(a=><div className="activity-row" key={a.id}><div className="activity-icon"><Activity size={15}/></div><div><b>{a.action}</b><span>{a.details}</span><small>{dateLabel(a.created_at)}</small></div></div>)}</div>:<Empty icon={Activity} title="No activity yet" detail="System events will appear here as you work."/>;}
 function Empty({icon:Icon,title,detail}:{icon:any;title:string;detail:string}){return <div className="empty-state"><div><Icon size={22}/></div><b>{title}</b><span>{detail}</span></div>;}
 function Modal({children,onClose,eyebrow,title,description}:{children:ReactNode;onClose:()=>void;eyebrow:string;title:string;description:string}){return <div className="modal-backdrop" onClick={onClose}><section className="modal" onClick={e=>e.stopPropagation()}><div className="modal-head"><div><div className="eyebrow">{eyebrow}</div><h2>{title}</h2><p>{description}</p></div><button type="button" className="icon-button" onClick={onClose}><X size={18}/></button></div>{children}</section></div>;}
