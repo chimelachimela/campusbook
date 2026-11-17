@@ -518,7 +518,8 @@ def restore_backup(filename:str,user:dict[str,Any]=Depends(get_current_user))->d
                 (SELECT COUNT(*) FROM course_offerings) +
                 (SELECT COUNT(*) FROM courses) +
                 (SELECT COUNT(*) FROM lecturers) +
-                (SELECT COUNT(*) FROM academic_sessions) AS count"""
+                (SELECT COUNT(*) FROM academic_sessions) +
+                (SELECT COUNT(*) FROM faculties) AS count"""
             ).fetchone()["count"]
             if new_rows:
                 raise HTTPException(status_code=409,detail="This is a legacy backup. Restore it only before V1 academic accounts and registrations exist.")
