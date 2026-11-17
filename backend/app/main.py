@@ -63,7 +63,7 @@ class LoginInput(BaseModel):
     password: str = Field(min_length=1, max_length=200)
 
 class SignupInput(BaseModel):
-    email: str = Field(min_length=6,max_length=160,pattern=r"^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$")
+    email: str = Field(min_length=6,max_length=160,pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     password: str = Field(min_length=8,max_length=200)
     role: str = Field(pattern="^(Student|Lecturer)$")
     identity_number: str = Field(min_length=2,max_length=40)
