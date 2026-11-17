@@ -89,20 +89,6 @@ CREATE TABLE IF NOT EXISTS course_registrations (
 CREATE INDEX IF NOT EXISTS idx_course_registrations_student ON course_registrations(student_id);
 CREATE INDEX IF NOT EXISTS idx_course_registrations_offering ON course_registrations(course_offering_id);
 
-CREATE TABLE IF NOT EXISTS course_grades (
-    id BIGSERIAL PRIMARY KEY,
-    registration_id BIGINT NOT NULL UNIQUE
-        REFERENCES course_registrations(id) ON DELETE RESTRICT,
-    score NUMERIC(5,2) NOT NULL CHECK (score BETWEEN 0 AND 100),
-    letter_grade VARCHAR(2) CHECK (letter_grade IS NULL OR letter_grade IN ('A','B','C','D','E','F')),
-    status VARCHAR(20) NOT NULL DEFAULT 'Draft'
-        CHECK (status IN ('Draft','Submitted','Approved','Published')),
-    entered_by BIGINT,
-    submitted_at TIMESTAMPTZ,
-    approved_at TIMESTAMPTZ,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
 CREATE TABLE IF NOT EXISTS user_accounts (
     id BIGSERIAL PRIMARY KEY,
     username VARCHAR(80) NOT NULL UNIQUE,
@@ -118,6 +104,20 @@ CREATE TABLE IF NOT EXISTS user_accounts (
         (role = 'Lecturer' AND lecturer_id IS NOT NULL AND student_id IS NULL) OR
         (role = 'Administrator' AND student_id IS NULL AND lecturer_id IS NULL)
     )
+);
+
+CREATE TABLE IF NOT EXISTS course_grades (
+    id BIGSERIAL PRIMARY KEY,
+    registration_id BIGINT NOT NULL UNIQUE
+        REFERENCES course_registrations(id) ON DELETE RESTRICT,
+    score NUMERIC(5,2) NOT NULL CHECK (score BETWEEN 0 AND 100),
+    letter_grade VARCHAR(2) CHECK (letter_grade IS NULL OR letter_grade IN ('A','B','C','D','E','F')),
+    status VARCHAR(20) NOT NULL DEFAULT 'Draft'
+        CHECK (status IN ('Draft','Submitted','Approved','Published')),
+    entered_by BIGINT REFERENCES user_accounts(id) ON DELETE SET NULL,
+    submitted_at TIMESTAMPTZ,
+    approved_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS user_sessions (
