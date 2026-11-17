@@ -2,9 +2,9 @@
 
 ## Product definition
 
-CampusBook is a focused university student records and course-results management system. It supports academic administrators maintaining institutional records and lecturers entering results for the course sections assigned to them.
+CampusBook is a focused university student records, course registration, and results management system. It supports academic administrators maintaining institutional records, students registering for courses, and lecturers entering results for their assigned course offerings.
 
-This version is an academic client/server project, not a full university ERP or student portal.
+This version is an academic client/server project with limited student self-service, not a full university ERP or learning-management system.
 
 ## Product roles
 
@@ -15,7 +15,7 @@ This version is an academic client/server project, not a full university ERP or 
 - Maintain the course catalogue and academic sessions/semesters.
 - Create course offerings/sections and assign lecturers.
 - Enrol students into course offerings or manage the class roster.
-- Create staff accounts and assign the Lecturer role.
+- Create student and lecturer accounts and assign their roles.\n- Configure course registration periods and eligible course offerings.\n- Review registrations and perform administrative overrides when necessary.
 - Review submitted course results and approve/finalise them.
 - Create and restore application-level backups.
 - Review activity logs.
@@ -81,10 +81,10 @@ Retain the existing application-level JSONB snapshot workflow and pre-restore sa
 - Do not collect student email addresses in Version 1.
 - Do not return internal email fields or unnecessary personal properties from student API responses.
 - Keep student records, grades, and activity logs behind authenticated API routes.
-- Use two roles only: Administrator and Lecturer. No student accounts.
+- Use three roles: Administrator, Lecturer, and Student.\n- Student accounts are institution-provisioned; public self-registration is disabled.
 - No public sign-up. Administrators create and disable staff accounts.
 - Enforce permissions on the server, not only by hiding frontend buttons.
-- Lecturers may access only their assigned course offerings and rosters.
+- Students may access only their own records and course registrations.\n- Lecturers may access only their assigned course offerings and rosters.
 - Only administrators may manage academic structure, student records, accounts, backups, restores, and final grade approval.
 - Use parameterised SQL, request validation, password hashing, secure session/token handling, restricted CORS, and non-sensitive audit messages.
 - Do not claim that the system is immune to hacking. Validate the implemented controls with tests.
@@ -104,7 +104,7 @@ Retain the existing application-level JSONB snapshot workflow and pre-restore sa
 - Preserve existing fictional demonstration records.
 - Replace any real student contact email with non-routable dummy data, then stop exposing or collecting student email in the application.
 - Map existing departments to faculties.
-- Map existing sample results to course catalogue entries, offerings, enrolments, and grade rows.
+- Map existing sample results to course catalogue entries, offerings, registrations, and grade rows.\n- Provision demo student accounts without using real email addresses.
 - Do not invent or alter a student's real matriculation number without confirming the institution's exact format.
 - Preserve backup/restore history where migration permits and take a verified backup before schema migration.
 
@@ -124,7 +124,7 @@ Retain the existing application-level JSONB snapshot workflow and pre-restore sa
 - Grades can be entered in a roster and imported from CSV with preview and validation.
 - Draft, submitted, and finalised grade states work and are audited.
 - No student email is collected or exposed through API responses, browser UI, logs, or backups.
-- Matriculation number validation uses the institution-confirmed format.
+- Matriculation number validation follows the working pattern `DE/YYYY/NNNN` (DE prefix, four-digit entry year, four-digit sequence), subject to checking punctuation against the exact institutional example.
 - Public API requests without a valid session are denied for student/result data and all write/restore actions.
 - Mobile navigation and product identity are clear; text contrast and size are improved.
 - Every visible control either works or is removed.
