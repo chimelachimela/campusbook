@@ -29,12 +29,12 @@ SQLite database
 ## Implemented in this branch
 
 - Dashboard with live student, department, and backup counts
-- Student records: create, list, and search
-- Department list and student counts
+- Student records: create, list, search, update, and delete
+- Department creation, directory, and student counts
 - Backup creation using SQLite's online backup API
 - Backup history with file sizes and timestamps
 - Restore flow with integrity validation and a pre-restore safety copy
-- Activity log entries for student and backup operations
+- Course result recording, listing, and deletion with score validation\n- Activity log entries for student, department, result, and backup operations
 - Responsive React administration interface
 - API test covering student creation, deletion, backup, and restore
 
@@ -113,6 +113,6 @@ A successful HTTP response alone is not proof of recovery: verify that the data 
 
 ## Current limitations
 
-This is an academic demonstration system, not a production student information system. Student creation and listing/search are implemented; editing/deletion are currently API-only. Results are a planned module and are not yet implemented. Authentication, role-based authorization, production deployment hardening, backup retention, and off-site backup copies are also outside this initial MVP.
+This is an academic demonstration system, not a production student information system. Student and result workflows are implemented in the web interface. Department deletion, result editing, authentication, role-based authorization, production deployment hardening, backup retention, and off-site backup copies are not included in this academic MVP. Authentication, role-based authorization, production deployment hardening, backup retention, and off-site backup copies are also outside this initial MVP.
 
 Do not use real student personal data in this public academic demonstration repository.
