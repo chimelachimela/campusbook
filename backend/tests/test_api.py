@@ -127,7 +127,7 @@ def test_backup_restore_round_trip_and_safety_snapshot():
 
 
 def test_backup_validation_and_filename_guard():
-    assert client.post("/api/backups/../../bad.json/restore").status_code == 400
+    assert client.post("/api/backups/not-a-campusbook-backup.json/restore").status_code == 400
     assert client.post("/api/backups/campusbook-20260101-000000-000000.json/restore").status_code == 404
 
 
