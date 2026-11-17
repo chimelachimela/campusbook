@@ -911,6 +911,8 @@ def create_academic_session(payload:AcademicSessionInput,user:dict[str,Any]=Depe
     if payload.starts_on and payload.ends_on and payload.starts_on>payload.ends_on:
         raise HTTPException(status_code=422,detail="Session start date must be before its end date.")
     with connect() as db:
+        if payload.is_current:
+            db.execute("UPDATE academic_sessions SET is_current=FALSE WHERE is_current=TRUE")
         try:
             row=db.execute("INSERT INTO academic_sessions (name,starts_on,ends_on,is_current) VALUES (%s,%s,%s,%s) RETURNING *",(payload.name.strip(),payload.starts_on,payload.ends_on,payload.is_current)).fetchone()
         except psycopg.errors.UniqueViolation as exc:
