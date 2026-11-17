@@ -19,15 +19,16 @@ def clean_database():
         db.execute(
             "TRUNCATE TABLE results, students, activity_logs, backup_snapshots, departments RESTART IDENTITY CASCADE"
         )
-        db.executemany(
-            "INSERT INTO departments (name, code) VALUES (%s, %s)",
-            [
-                ("Computer Engineering", "CPE"),
-                ("Computer Science", "CSC"),
-                ("Electrical Engineering", "EEE"),
-                ("Accountancy", "ACC"),
-            ],
-        )
+        with db.cursor() as cursor:
+            cursor.executemany(
+                "INSERT INTO departments (name, code) VALUES (%s, %s)",
+                [
+                    ("Computer Engineering", "CPE"),
+                    ("Computer Science", "CSC"),
+                    ("Electrical Engineering", "EEE"),
+                    ("Accountancy", "ACC"),
+                ],
+            )
     yield
 
 
