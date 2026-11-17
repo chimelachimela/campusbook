@@ -527,7 +527,7 @@ def list_backups(user: dict[str, Any] = Depends(get_current_user)) -> list[dict[
 @app.post("/api/backups/{filename}/restore")
 def restore_backup(filename:str,user:dict[str,Any]=Depends(get_current_user))->dict[str,Any]:
     require_roles(user,"Administrator")
-    if not re.fullmatch(r"campusbook-[0-9]{8}-[0-9]{6}-[0-9]{6}\\.json",filename):
+    if not re.fullmatch(r"campusbook-[0-9]{8}-[0-9]{6}-[0-9]{6}\.json",filename):
         raise HTTPException(status_code=400,detail="Invalid backup filename.")
     with connect() as db:
         backup=db.execute("SELECT snapshot FROM backup_snapshots WHERE filename=%s",(filename,)).fetchone()
