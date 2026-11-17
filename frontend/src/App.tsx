@@ -7,7 +7,10 @@ import {
   RefreshCw,
 } from 'lucide-react';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\\/$/,'');
+type AuthUser={id:number;username:string;role:'Administrator'|'Lecturer'|'Student';student_id:number|null;lecturer_id:number|null};
+type Offering={id:number;course_code:string;course_title:string;credit_units:number;level:string;department:string;semester:string;academic_session:string;section:string;status:string};
+type RosterRow={student_id:number;matric_number:string;first_name:string;last_name:string;score:number|null;grade_status:string|null};
 type Student = {
   id:number; matric_number:string; first_name:string; last_name:string;
   department:string; level:string; status:string; created_at:string;
@@ -23,7 +26,7 @@ class ApiError extends Error {
   constructor(message:string,readonly status:number){super(message);this.name='ApiError';}
 }
 async function request<T=any>(path:string, options?:RequestInit):Promise<T> {
-  const response = await fetch(API+path,{...options,headers:{'Content-Type':'application/json',...(options?.headers||{})}});
+  const response = await fetch(API+path,{credentials:'include',...options,headers:{'Content-Type':'application/json',...(options?.headers||{})}});
   if(!response.ok){
     const body=await response.json().catch(()=>({}));
     throw new ApiError(body.detail||(response.status===502||response.status===503||response.status===504?'CampusBook is starting up.':'The request could not be completed.'),response.status);
@@ -50,8 +53,52 @@ const dateLabel=(v:string)=>new Date(v).toLocaleString([],{month:'short',day:'nu
 const bytes=(n:number)=>n<1024?n+' B':(n/1024).toFixed(1)+' KB';
 const initials=(s:Student)=>(s.first_name[0]+s.last_name[0]).toUpperCase();
 
+
+function PortalFrame({user,onLogout,children}:{user:AuthUser;onLogout:()=>void;children:ReactNode}){
+ return <div className="portal-shell"><header className="portal-header"><div className="portal-brand"><div className="brand-mark"><GraduationCap size={21}/></div><span>campus<span className="brand-light">book</span></span></div><div className="portal-user"><span>{user.username}</span><button className="secondary-button" onClick={onLogout}>Sign out</button></div></header><main className="portal-content">{children}</main></div>;
+}
+function StudentPortal({user,onLogout}:{user:AuthUser;onLogout:()=>void}){
+ const [offerings,setOfferings]=useState<Offering[]>([]),[registrations,setRegistrations]=useState<any[]>([]),[results,setResults]=useState<any[]>([]);
+ const [loading,setLoading]=useState(true),[error,setError]=useState(''),[notice,setNotice]=useState('');
+ async function load(){setLoading(true);setError('');try{const [o,r,g]=await Promise.all([request<Offering[]>('/api/course-offerings'),request<any[]>('/api/student/registrations'),request<any[]>('/api/student/results')]);setOfferings(o);setRegistrations(r);setResults(g);}catch(e){setError(e instanceof Error?e.message:'Could not load academic information.');}finally{setLoading(false);}}
+ useEffect(()=>{void load();},[]);
+ async function register(id:number){try{await request('/api/student/course-offerings/'+id+'/register',{method:'POST'});setNotice('Course registered.');await load();}catch(e){setNotice(e instanceof Error?e.message:'Registration failed.');}}
+ async function drop(id:number){if(!window.confirm('Drop this course?'))return;try{await request('/api/student/course-offerings/'+id+'/register',{method:'DELETE'});setNotice('Course dropped.');await load();}catch(e){setNotice(e instanceof Error?e.message:'Could not drop course.');}}
+ return <PortalFrame user={user} onLogout={onLogout}><div className="portal-heading"><div><p className="eyebrow">STUDENT WORKSPACE</p><h1>My academic space</h1><p>Register for courses, review your selections and check published results.</p></div><span className="role-chip">Student</span></div>
+ {notice&&<div className="portal-notice">{notice}<button onClick={()=>setNotice('')}>Dismiss</button></div>}{error&&<div className="portal-error">{error}<button onClick={()=>void load()}>Retry</button></div>}
+ {loading?<div className="portal-card">Loading academic information…</div>:<>
+ <section className="portal-section"><div className="portal-section-heading"><h2>Available courses</h2><span>{offerings.length} available</span></div>{offerings.length===0?<div className="portal-empty">No courses are open for your department and level right now.</div>:<div className="portal-course-grid">{offerings.map(o=><article className="portal-card" key={o.id}><div className="course-code">{o.course_code}</div><h3>{o.course_title}</h3><p>{o.department} · {o.level} Level</p><div className="course-meta">{o.academic_session} · {o.semester} · Section {o.section}</div><button className="primary-button" onClick={()=>void register(o.id)}>Register for course</button></article>)}</div>}</section>
+ <section className="portal-section"><div className="portal-section-heading"><h2>My registered courses</h2><span>{registrations.filter(r=>r.status==='Registered').length} active</span></div>{registrations.length===0?<div className="portal-empty">You have not registered for any courses yet.</div>:<div className="portal-table-wrap"><table className="portal-table"><thead><tr><th>Course</th><th>Session / Semester</th><th>Status</th><th></th></tr></thead><tbody>{registrations.map(r=><tr key={r.id}><td><b>{r.course_code}</b><span>{r.course_title}</span></td><td>{r.academic_session} · {r.semester}</td><td>{r.status}</td><td>{r.status==='Registered'&&<button className="text-action" onClick={()=>void drop(r.id)}>Drop</button>}</td></tr>)}</tbody></table></div>}</section>
+ <section className="portal-section"><div className="portal-section-heading"><h2>Published results</h2><span>{results.length} results</span></div>{results.length===0?<div className="portal-empty">Published results will appear here after approval.</div>:<div className="portal-table-wrap"><table className="portal-table"><thead><tr><th>Course</th><th>Session / Semester</th><th>Score</th><th>Grade</th></tr></thead><tbody>{results.map((r,i)=><tr key={i}><td><b>{r.course_code}</b><span>{r.course_title}</span></td><td>{r.academic_session} · {r.semester}</td><td>{r.score}</td><td>{r.letter_grade||'—'}</td></tr>)}</tbody></table></div>}</section>
+ </>}</PortalFrame>;
+}
+function LecturerPortal({user,onLogout}:{user:AuthUser;onLogout:()=>void}){
+ const [offerings,setOfferings]=useState<Offering[]>([]),[selected,setSelected]=useState<number|''>(''),[roster,setRoster]=useState<RosterRow[]>([]);
+ const [scores,setScores]=useState<Record<number,string>>({}),[loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[notice,setNotice]=useState(''),[error,setError]=useState('');
+ async function loadOfferings(){setLoading(true);setError('');try{const data=await request<Offering[]>('/api/course-offerings');setOfferings(data);if(data.length&&!selected)setSelected(data[0].id);}catch(e){setError(e instanceof Error?e.message:'Could not load assigned courses.');}finally{setLoading(false);}}
+ async function loadRoster(id:number){try{const data=await request<RosterRow[]>('/api/lecturer/offerings/'+id+'/roster');setRoster(data);setScores(Object.fromEntries(data.map(r=>[r.student_id,r.score===null?'':String(r.score)])));}catch(e){setError(e instanceof Error?e.message:'Could not load class roster.');}}
+ useEffect(()=>{void loadOfferings();},[]);
+ useEffect(()=>{if(selected)void loadRoster(selected);},[selected]);
+ async function importCsv(file?:File){if(!file||!selected)return;const lines=(await file.text()).trim().split(/\\r?\\n/);const parsed=new Map<string,string>();for(const line of lines.slice(1)){const parts=line.split(',').map(x=>x.trim());if(parts[0]&&parts[1])parsed.set(parts[0],parts[1]);}let matched=0;const next={...scores};for(const row of roster){if(parsed.has(row.matric_number)){next[row.student_id]=parsed.get(row.matric_number)!;matched++;}}setScores(next);setNotice('Imported '+matched+' matching scores. Review before saving.');}
+ async function save(submit=false){if(!selected)return;setSaving(true);setError('');try{const grades=roster.filter(r=>(scores[r.student_id]||'').trim()!=='').map(r=>({student_id:r.student_id,score:Number(scores[r.student_id])}));if(grades.some(g=>!Number.isFinite(g.score)||g.score<0||g.score>100))throw new Error('Scores must be between 0 and 100.');await request('/api/lecturer/offerings/'+selected+'/grades',{method:'PUT',body:JSON.stringify({grades})});if(submit){await request('/api/lecturer/offerings/'+selected+'/submit',{method:'POST'});setNotice('Grade roster submitted for administrator approval.');}else setNotice('Draft grades saved.');await loadRoster(selected);}catch(e){setError(e instanceof Error?e.message:'Could not save grade roster.');}finally{setSaving(false);}}
+ const current=offerings.find(o=>o.id===selected);
+ return <PortalFrame user={user} onLogout={onLogout}><div className="portal-heading"><div><p className="eyebrow">LECTURER WORKSPACE</p><h1>My courses</h1><p>Review assigned class rosters and submit student marks.</p></div><span className="role-chip">Lecturer</span></div>
+ {notice&&<div className="portal-notice">{notice}<button onClick={()=>setNotice('')}>Dismiss</button></div>}{error&&<div className="portal-error">{error}<button onClick={()=>selected?void loadRoster(selected):void loadOfferings()}>Retry</button></div>}
+ {loading?<div className="portal-card">Loading assigned courses…</div>:offerings.length===0?<div className="portal-empty">No course offerings have been assigned to your account.</div>:<>
+ <section className="portal-card lecturer-course-select"><label htmlFor="lecturer-course">Select course offering</label><select id="lecturer-course" value={selected} onChange={e=>setSelected(Number(e.target.value))}>{offerings.map(o=><option value={o.id} key={o.id}>{o.course_code} — {o.course_title} · {o.academic_session} {o.semester}</option>)}</select>{current&&<p>{current.department} · Section {current.section} · {current.level} Level</p>}</section>
+ <section className="portal-section"><div className="portal-section-heading"><div><h2>Class grade roster</h2><span>Enter total scores from 0 to 100</span></div><div className="portal-import"><a href={'data:text/csv;charset=utf-8,'+encodeURIComponent('matric_number,score\\n'+roster.map(r=>r.matric_number+',').join('\\n'))} download="campusbook-grade-template.csv">Download CSV template</a><label className="secondary-button">Import CSV<input type="file" accept=".csv,text/csv" onChange={e=>void importCsv(e.target.files?.[0])}/></label></div></div>
+ {roster.length===0?<div className="portal-empty">No students are registered for this course yet.</div>:<div className="portal-table-wrap"><table className="portal-table"><thead><tr><th>Matriculation number</th><th>Student</th><th>Total score / 100</th><th>State</th></tr></thead><tbody>{roster.map(r=><tr key={r.student_id}><td><b>{r.matric_number}</b></td><td>{r.first_name} {r.last_name}</td><td><input className="score-input" type="number" min="0" max="100" step="0.5" value={scores[r.student_id]??''} onChange={e=>setScores(v=>({...v,[r.student_id]:e.target.value}))}/></td><td>{r.grade_status||'Not entered'}</td></tr>)}</tbody></table></div>}
+ <div className="portal-actions"><button className="secondary-button" disabled={saving||!roster.length} onClick={()=>void save(false)}>Save draft</button><button className="primary-button" disabled={saving||!roster.length} onClick={()=>void save(true)}>Submit completed roster</button></div></section>
+ </>}</PortalFrame>;
+}
+
 export default function App(){
   const [page,setPage]=useState('Overview');
+  const [user,setUser]=useState<AuthUser|null>(null);
+  const [authLoading,setAuthLoading]=useState(true);
+  const [loginUsername,setLoginUsername]=useState('');
+  const [loginPassword,setLoginPassword]=useState('');
+  const [loginError,setLoginError]=useState('');
   const [mobileNavOpen,setMobileNavOpen]=useState(false);
   const [dashboard,setDashboard]=useState<Dashboard|null>(null);
   const [students,setStudents]=useState<Student[]>([]);
@@ -86,9 +133,12 @@ export default function App(){
     }catch(e){setError(e instanceof Error?e.message:'Could not connect to the API.');}
     finally{setLoading(false);}
   }
-  useEffect(()=>{void refresh();},[]);
+  useEffect(()=>{request<AuthUser>('/api/auth/me').then(setUser).catch(()=>setUser(null)).finally(()=>setAuthLoading(false));},[]);
+  useEffect(()=>{if(user?.role==='Administrator')void refresh();},[user]);
   useEffect(()=>{if(!notice)return;const t=window.setTimeout(()=>setNotice(''),4000);return()=>window.clearTimeout(t);},[notice]);
 
+  async function submitLogin(e:FormEvent){e.preventDefault();setLoginError('');try{const account=await request<AuthUser>('/api/auth/login',{method:'POST',body:JSON.stringify({username:loginUsername,password:loginPassword})});setUser(account);setLoginPassword('');}catch(e){setLoginError(e instanceof Error?e.message:'Unable to sign in.');}}
+  async function signOut(){try{await request('/api/auth/logout',{method:'POST'});}finally{setUser(null);setDashboard(null);setStudents([]);setResults([]);setBackups([]);setActivity([]);}}
   const filteredStudents=useMemo(()=>students.filter(s=>{
     const matchesSearch=[s.first_name,s.last_name,s.matric_number,s.department].join(' ').toLowerCase().includes(search.toLowerCase());
     const matchesStatus=studentStatus==='All'||s.status===studentStatus;
@@ -136,6 +186,10 @@ export default function App(){
   }
 
   const nav=[{label:'Overview',icon:LayoutDashboard},{label:'Students',icon:Users},{label:'Departments',icon:Building2},{label:'Results',icon:BookOpen},{label:'Backup & Recovery',icon:Database},{label:'Activity Log',icon:Activity}];
+  if(authLoading)return <div className="auth-screen"><div className="auth-card"><div className="portal-brand"><div className="brand-mark"><GraduationCap size={21}/></div><span>campus<span className="brand-light">book</span></span></div><p>Checking your session…</p></div></div>;
+  if(!user)return <div className="auth-screen"><form className="auth-card" onSubmit={submitLogin}><div className="portal-brand"><div className="brand-mark"><GraduationCap size={21}/></div><span>campus<span className="brand-light">book</span></span></div><p className="eyebrow">STUDENT RECORDS & COURSE REGISTRATION</p><h1>Sign in to CampusBook</h1><p className="auth-description">Use the account provided by your institution.</p>{loginError&&<div className="portal-error">{loginError}</div>}<label>Username<input autoComplete="username" value={loginUsername} onChange={e=>setLoginUsername(e.target.value)} required/></label><label>Password<input type="password" autoComplete="current-password" value={loginPassword} onChange={e=>setLoginPassword(e.target.value)} required/></label><button className="primary-button" type="submit">Sign in</button><small>Accounts are created by the institution. Public sign-up is disabled.</small></form></div>;
+  if(user.role==='Student')return <StudentPortal user={user} onLogout={()=>void signOut()}/>;
+  if(user.role==='Lecturer')return <LecturerPortal user={user} onLogout={()=>void signOut()}/>;
   return <div className="app-shell">
     <aside className={'sidebar '+(mobileNavOpen?'mobile-open':'')}>
       <div className="mobile-brand"><div className="brand-mark"><GraduationCap size={21}/></div><span>campus<span className="brand-light">book</span></span></div>
@@ -143,10 +197,10 @@ export default function App(){
       <div className="workspace"><div className="workspace-avatar">RS</div><div><b>Rivers State University</b><small>Academic records</small></div></div>
       <div className="nav-label">WORKSPACE</div>
       <nav>{nav.map(item=><button key={item.label} className={'nav-item '+(page===item.label?'active':'')} onClick={()=>{setPage(item.label);setMobileNavOpen(false);}}><item.icon size={18}/><span>{item.label}</span>{item.label==='Backup & Recovery'&&<i className="nav-dot"/>}</button>)}</nav>
-      <div className="sidebar-bottom"><div className="profile"><div className="profile-avatar">CA</div><div><b>Campus Admin</b><small>Demo administrator</small></div></div></div>
+      <div className="sidebar-bottom"><div className="profile"><div className="profile-avatar">CA</div><div><b>{user.username}</b><small>Administrator</small></div></div></div>
     </aside>
     <main className="main">
-      <header className="topbar"><button className="mobile-menu-button" aria-label="Open navigation" onClick={()=>setMobileNavOpen(v=>!v)}><Menu size={20}/></button><div className="breadcrumb"><span>Workspace</span><ChevronRight size={14}/><b>{page}</b></div><div className="top-actions"><div className="system-status"><i/>System operational</div><div className="top-avatar">CA</div></div></header>
+      <header className="topbar"><button className="mobile-menu-button" aria-label="Open navigation" onClick={()=>setMobileNavOpen(v=>!v)}><Menu size={20}/></button><div className="breadcrumb"><span>Workspace</span><ChevronRight size={14}/><b>{page}</b></div><div className="top-actions"><div className="system-status"><i/>System operational</div><span className="admin-user-label">{user.username}</span><button className="secondary-button signout-button" onClick={()=>void signOut()}>Sign out</button></div></header>
       <div className="content">
         {loading&&!dashboard&&!error&&<div className="loading-banner"><RefreshCw size={17} className="spin"/><div><b>Connecting to CampusBook</b><span>The server may be waking up. We'll reconnect automatically; this can take up to a minute.</span></div></div>}
         {error&&<div className="error-banner"><Database size={17}/><div><b>CampusBook is temporarily unavailable</b><span>{error} We tried reconnecting automatically. Please try again.</span></div><button onClick={()=>void refresh()}>Retry</button></div>}
