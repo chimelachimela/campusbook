@@ -90,15 +90,16 @@ def initialize_database() -> None:
     with connect() as db:
         for statement in statements:
             db.execute(statement)
-        db.executemany(
-            "INSERT INTO departments (name, code) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-            [
-                ("Computer Engineering", "CPE"),
-                ("Computer Science", "CSC"),
-                ("Electrical Engineering", "EEE"),
-                ("Accountancy", "ACC"),
-            ],
-        )
+        with db.cursor() as cursor:
+            cursor.executemany(
+                "INSERT INTO departments (name, code) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                [
+                    ("Computer Engineering", "CPE"),
+                    ("Computer Science", "CSC"),
+                    ("Electrical Engineering", "EEE"),
+                    ("Accountancy", "ACC"),
+                ],
+            )
 
 
 @app.on_event("startup")
