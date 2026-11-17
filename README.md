@@ -99,7 +99,7 @@ cd backend
 pytest
 ```
 
-## Backup and recovery demonstration
+## Testing\n\nSee [docs/testing.md](docs/testing.md) for the automated test suite, manual acceptance checks, and recommended evidence to capture for the academic demonstration.\n\n## Backup and recovery demonstration
 
 1. Start both the API and frontend.
 2. Add a student record.
