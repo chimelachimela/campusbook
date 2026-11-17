@@ -14,6 +14,19 @@ ALTER TABLE departments
 
 CREATE INDEX IF NOT EXISTS idx_departments_faculty_id ON departments(faculty_id);
 
+INSERT INTO faculties (name,code) VALUES
+('Faculty of Engineering','ENG'),
+('Faculty of Science','SCI'),
+('Faculty of Administration and Management','MGS')
+ON CONFLICT DO NOTHING;
+
+UPDATE departments SET faculty_id=(SELECT id FROM faculties WHERE code='ENG')
+WHERE name IN ('Computer Engineering','Electrical Engineering');
+UPDATE departments SET faculty_id=(SELECT id FROM faculties WHERE code='SCI')
+WHERE name='Computer Science';
+UPDATE departments SET faculty_id=(SELECT id FROM faculties WHERE code='MGS')
+WHERE name='Accountancy';
+
 -- Give every student a relational department key; retain the legacy text label for compatibility.
 ALTER TABLE students ADD COLUMN IF NOT EXISTS department_id BIGINT REFERENCES departments(id) ON DELETE RESTRICT;
 UPDATE students s SET department_id=d.id FROM departments d WHERE s.department=d.name AND s.department_id IS NULL;
