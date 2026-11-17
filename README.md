@@ -2,13 +2,21 @@
 
 A React + FastAPI student records management system backed by PostgreSQL.
 
+## Live demonstration
+
+- **Open CampusBook:** https://campusbook-frontend.onrender.com
+- **API health check:** https://campusbook-api-live.onrender.com/api/health
+- **Interactive API documentation:** https://campusbook-api-live.onrender.com/docs
+
+The frontend is a public static site and the API is a separate Render web service. The free API may take around a minute to wake after 15 minutes without inbound traffic. The Neon database compute may also suspend while idle and resume on the next query. This is a demonstration deployment, not an uptime guarantee.
+
 ## Architecture
 
 ```text
-React + TypeScript + Vite
+React + TypeScript + Vite (Render Static Site)
         | HTTPS / JSON
         v
-FastAPI application on Render
+FastAPI application (Render Web Service)
         | psycopg / TLS
         v
 Neon PostgreSQL
@@ -16,7 +24,7 @@ Neon PostgreSQL
         +-- students
         +-- results
         +-- activity log
-        +-- logical JSON backup snapshots
+        +-- logical JSONB backup snapshots
 ```
 
 ## Features
@@ -98,6 +106,8 @@ The application stores logical JSONB snapshots in the same Neon database. Restor
 
 ## Deployment
 
-The API and frontend are deployed as separate Render services. The API requires `DATABASE_URL` and `CAMPUSBOOK_CORS_ORIGINS`. The frontend requires `VITE_API_URL` at build time. Both services can use Render's free plan; free API services may sleep after inactivity.
+The API and frontend are deployed as separate Render services. The API requires `DATABASE_URL` and `CAMPUSBOOK_CORS_ORIGINS`. The frontend requires `VITE_API_URL` at build time. The current public URLs are listed at the top of this README.
+
+Free Render web services spin down after 15 minutes without inbound traffic; the next request starts the service again, so the first API request can be slow. The static frontend does not need an always-running application server. Neon compute can also scale to zero while retaining database storage. These free tiers are suitable for a class demonstration but do not promise uninterrupted availability.
 
 Do not use real student personal data in this public academic demonstration project.
