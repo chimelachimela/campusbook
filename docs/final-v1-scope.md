@@ -2,131 +2,135 @@
 
 ## Product definition
 
-CampusBook is a focused university student records, course registration, and results management system. It supports academic administrators maintaining institutional records, students registering for courses, and lecturers entering results for their assigned course offerings.
+CampusBook is a focused university student records, course registration and results management system. It supports three user groups: administrators, lecturers and students.
 
-This version is an academic client/server project with limited student self-service, not a full university ERP or learning-management system.
+This is an academic client/server project, not a complete university ERP or learning-management system.
 
-## Product roles
+## User roles
 
 ### Administrator / Registrar
-
-- Manage faculties and departments.
-- Register, edit, search, and deactivate student records.
-- Maintain the course catalogue and academic sessions/semesters.
-- Create course offerings/sections and assign lecturers.
-- Enrol students into course offerings or manage the class roster.
-- Create student and lecturer accounts and assign their roles.\n- Configure course registration periods and eligible course offerings.\n- Review registrations and perform administrative overrides when necessary.
-- Review submitted course results and approve/finalise them.
-- Create and restore application-level backups.
-- Review activity logs.
+- Manage student records and departments within the configured faculty directory.
+- Create academic sessions and semesters, including course registration windows.
+- Maintain the course catalogue and open course offerings/sections.
+- Create lecturer records and provision lecturer/student accounts.
+- Assign lecturers to course offerings.
+- Review student registrations and submitted grade rosters.
+- Approve/publish results.
+- Create/restore application snapshots and inspect the activity log.
 
 ### Lecturer
-
-- Sign in using an account created by an administrator; public self-registration is disabled.
+- Sign in using an account provisioned by an administrator. Public sign-up is disabled.
 - See only course offerings assigned to that lecturer.
-- View the enrolled student roster for each offering.
-- Enter or edit draft marks for students in that roster.
-- Import a CSV roster of marks using a downloadable template.
-- Preview validation errors before saving.
-- Submit a completed roster for administrator review.
-- Cannot create or delete student records, assign lecturers, manage accounts, or restore backups.
+- Open the enrolled class roster.
+- Enter marks in a spreadsheet-style grid or import a CSV file.
+- Review imported values, save draft marks and submit a completed roster.
+- Cannot manage students, accounts, course offerings or backups.
 
 ### Student
-
-Student login, self-service transcripts, course registration, fee payments, attendance, and student messaging are not included in Version 1.
+- Sign in using an institution-provisioned account.
+- View only their own academic records.
+- Browse course offerings available for their department and level.
+- Register for and drop courses while the registration window is open.
+- Review their registered courses and published results.
+- Cannot see another student's private records or enter grades.
 
 ## Academic information architecture
 
-Faculty
-└── Department
-    ├── Students
-    └── Course catalogue
-        └── Course offering (academic session + semester + section)
-            ├── Assigned lecturer
-            ├── Enrolled students (class roster)
-            └── Student grades
+```text
+University
+└── Faculty
+    └── Department
+        ├── Students
+        └── Course catalogue
+            └── Course offering (academic session + semester + section)
+                ├── Assigned lecturer
+                ├── Student registrations / class roster
+                └── Student grades
+```
 
-A student belongs to one department. A department belongs to one faculty. A course is defined once in the catalogue; each delivery in a semester is a separate course offering. A lecturer is assigned to an offering, not hard-coded to a course forever. The same course can therefore be offered to multiple sections or cohorts and assigned to the relevant lecturer(s).
+A student belongs to one department; a department belongs to one faculty. A course is defined once in the catalogue. Each time it is taught in a particular session, semester and section, it becomes a course offering. Lecturers are assigned to offerings, not permanently to courses.
+
+A grade belongs to a student's registration in a specific offering. It is not an unrelated student-name/grade row.
 
 ## Core workflows
 
 ### Student records
+1. Administrator selects a faculty and department.
+2. Administrator creates a student record under that department.
+3. The record stores name, matriculation number, department, level and status.
+4. Student email is not collected or displayed.
+5. New matriculation numbers follow `DE/YYYY/NNNN`, for example `DE/2023/0001`.
 
-1. Administrator selects a faculty.
-2. Administrator selects or creates a department within that faculty.
-3. Administrator adds a student under that department.
-4. Student record captures name, matriculation number, department, level, and status.
-5. Email is not collected or displayed for student records in this version.
+### Student course registration
+1. Administrator creates an academic session and semester and sets the registration window.
+2. Administrator creates course offerings and assigns lecturers.
+3. Student signs in and sees offerings matching their department and level.
+4. Student registers or drops courses during the configured window.
+5. The system rejects duplicate, closed, full or ineligible registrations.
 
-### Course and result entry
+V1 eligibility checks department and level. Prerequisites, maximum credit-unit rules and programme-specific elective groups are outside scope.
 
-1. Administrator creates or selects an academic session and semester.
-2. Administrator creates/selects a course in the course catalogue.
-3. Administrator creates a course offering/section and assigns a lecturer.
-4. Administrator enrols the relevant students into that offering (or imports a roster).
-5. Lecturer opens **My Courses**, selects an assigned offering, and sees the class roster.
-6. Lecturer enters marks in a spreadsheet-like grid or imports a CSV using the system's roster template.
-7. The system validates student membership, duplicate rows, missing marks, and score bounds, then shows a preview.
-8. Lecturer saves a draft and submits the completed roster for review.
-9. Administrator reviews and finalises the roster. Finalised grades are locked from lecturer editing; corrections require an administrator-controlled change with an audit entry.
+### Lecturer grade entry and approval
+1. Lecturer selects an assigned course offering.
+2. CampusBook loads the enrolled class roster.
+3. Lecturer enters marks in the grid or imports a CSV with `matric_number,score` columns.
+4. The lecturer reviews the roster, saves drafts and submits the completed set.
+5. The API validates that every registered student has one score from 0 to 100.
+6. Administrator reviews and publishes the submitted grades.
+7. Published grades are read-only through the lecturer workflow.
 
-A grade belongs to a student's enrolment in a particular course offering. It is not an independent student-grade row with a free-text course name.
+V1 stores total scores from 0 to 100. It does not invent CA/exam weighting or an institutional letter-grade scale.
 
 ### Backup and recovery
+- Keep the application-level JSONB snapshot and pre-restore safety snapshot.
+- V2 snapshots include the academic data and account records needed to restore V1.
+- Revoke active sessions during recovery.
+- State clearly that snapshots stored in the same Neon database are not independent disaster-recovery copies.
 
-Retain the existing application-level JSONB snapshot workflow and pre-restore safety snapshot. Explain that snapshots stored in the same Neon database are not independent disaster-recovery copies.
-
-## Privacy and security
-
-- Do not collect student email addresses in Version 1.
-- Do not return internal email fields or unnecessary personal properties from student API responses.
-- Keep student records, grades, and activity logs behind authenticated API routes.
-- Use three roles: Administrator, Lecturer, and Student.\n- Student accounts are institution-provisioned; public self-registration is disabled.
-- No public sign-up. Administrators create and disable staff accounts.
-- Enforce permissions on the server, not only by hiding frontend buttons.
-- Students may access only their own records and course registrations.\n- Lecturers may access only their assigned course offerings and rosters.
-- Only administrators may manage academic structure, student records, accounts, backups, restores, and final grade approval.
-- Use parameterised SQL, request validation, password hashing, secure session/token handling, restricted CORS, and non-sensitive audit messages.
-- Do not claim that the system is immune to hacking. Validate the implemented controls with tests.
+## Security and privacy
+- Three roles: Administrator, Lecturer and Student.
+- No public sign-up; administrators provision accounts.
+- Passwords are hashed using Argon2id.
+- Sessions expire after 12 hours and are checked server-side.
+- Every protected API operation enforces its role on the server.
+- Students can access only their own records and registrations.
+- Lecturers can access only their assigned offerings and rosters.
+- Only administrators can manage academic structure, student records, accounts, backups, restores and grade approval.
+- Student email is not collected; the legacy database column contains non-routable dummy values and is not returned by student APIs.
+- Use parameterised SQL, request validation, restricted CORS and non-sensitive audit messages.
+- Do not claim that any website is immune to hacking. Verify controls with tests.
 
 ## Interface requirements
-
-- Keep the current CampusBook visual identity, but make the wordmark and institution identity visible at mobile widths.
-- Use readable type sizes, stronger text contrast, clear labels, and scannable table hierarchy.
-- Use a mobile navigation pattern that does not permanently hide the product identity or leave users without navigation labels.
-- Make all visible controls functional. Remove decorative Settings, Help, notification, or workspace controls if their workflows are not implemented.
-- Students page: browse by Faculty → Department, search, filter, and view students in the selected academic context.
-- Results page: organise by academic session → semester → course offering → class roster, not a flat list of individual grades.
-- Provide clear loading, empty, error, and success states. Never present an API failure as a valid zero count.
+- Keep CampusBook's identity visible on desktop and mobile.
+- Use readable type, stronger contrast, clear labels and scannable tables.
+- Students are browsed by Faculty → Department.
+- Results are organised by Session → Semester → Course offering → Class roster.
+- Provide loading, empty, error and success states. An API failure must never appear as a valid zero count.
+- Every visible button must perform an action; remove decorative controls without a working workflow.
 
 ## Data migration
-
-- Preserve existing fictional demonstration records.
-- Replace any real student contact email with non-routable dummy data, then stop exposing or collecting student email in the application.
+- Preserve the original student record and all fictional demonstration records.
+- Replace the real student contact email with non-routable dummy data and stop collecting/returning email.
 - Map existing departments to faculties.
-- Map existing sample results to course catalogue entries, offerings, registrations, and grade rows.\n- Provision demo student accounts without using real email addresses.
-- Do not invent or alter a student's real matriculation number without confirming the institution's exact format.
-- Preserve backup/restore history where migration permits and take a verified backup before schema migration.
+- Map existing sample results to courses, offerings, registrations and grade rows.
+- Migrate synthetic matric numbers to the DE/year/four-digit pattern without silently changing the original student's number.
+- Take a verified snapshot before applying the production schema migration.
 
 ## Explicitly out of scope
-
-- Student accounts and student self-service portal.
-- Admissions, fees, payments, scholarships, attendance, timetables, hostel management, library, LMS, messaging, and payroll.
-- Multi-campus tenancy, complex academic advising, degree audits, and transcript certification.
-- Production-grade disaster recovery beyond the existing demonstration backup workflow.
-- Public registration or unrestricted API access.
+- Public account creation and student self-service account registration.
+- Admissions, fees, payments, scholarships, attendance, timetables, hostel management, library, LMS, messaging and payroll.
+- Multi-campus tenancy, complex academic advising, degree audits and transcript certification.
+- Prerequisite engines, programme-specific elective rules and credit-unit limits.
+- Independent off-site disaster recovery beyond the demonstrated database snapshot flow.
 
 ## Definition of done
-
 - Faculty → department → student hierarchy works end-to-end.
-- Course catalogue, course offering, lecturer assignment, roster enrolment, and grade relationships are enforced by PostgreSQL constraints.
-- Lecturer sees only assigned offerings; administrator has the administrative functions.
-- Grades can be entered in a roster and imported from CSV with preview and validation.
-- Draft, submitted, and finalised grade states work and are audited.
-- No student email is collected or exposed through API responses, browser UI, logs, or backups.
-- Matriculation number validation follows the working pattern `DE/YYYY/NNNN` (for example, `DE/2023/0001`: DE prefix, four-digit entry year, four-digit sequence). Exact separators should be checked against the user's physical matriculation card before enforcing the regex.
-- Public API requests without a valid session are denied for student/result data and all write/restore actions.
-- Mobile navigation and product identity are clear; text contrast and size are improved.
-- Every visible control either works or is removed.
-- Automated tests cover role permissions, roster isolation, grade validation, privacy response fields, backup/restore, and CRUD.
-- Deployment and live API are verified after migration; no switch of hosting provider unless evidence shows a platform limitation that blocks the requirements.
+- Administrator, Lecturer and Student sign-in and server-enforced permissions work.
+- Students can register/drop eligible offerings and see only their own published results.
+- Lecturers see only assigned offerings and can submit validated class rosters.
+- Administrators can provision accounts, configure academic offerings and approve results.
+- Matriculation format and email privacy are enforced.
+- Backup/restore includes V1 academic records and invalidates prior sessions.
+- Mobile navigation, identity, contrast and typography are clear.
+- CI covers CRUD, role boundaries, course registration, grade entry/approval and backup/restore.
+- The public deployment is switched only after authentication and API tests pass.
