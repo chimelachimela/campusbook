@@ -197,3 +197,18 @@ def test_self_service_signup_and_bulk_course_registration():
 def test_self_service_signup_requires_admin_created_academic_record():
     response=client.post("/api/auth/signup",json={"email":"unknown@example.edu","password":"student-password-123","role":"Student","identity_number":"DE/2099/9999"})
     assert response.status_code==404
+
+
+def test_public_demo_administrator_is_read_only(monkeypatch):
+    monkeypatch.setenv("CAMPUSBOOK_DEMO_ADMIN_ENABLED","true")
+    with main.connect() as db:
+        db.execute(
+            "INSERT INTO user_accounts (username,password_hash,role) VALUES ('demo.admin',%s,'Administrator')",
+            (main.PASSWORD_HASHER.hash("demo-admin-password-123"),)
+        )
+    demo=client.post("/api/auth/demo-admin")
+    assert demo.status_code==200 and demo.json()["username"]=="demo.admin"
+    assert client.get("/api/dashboard").status_code==200
+    blocked=client.post("/api/students",json=student_payload("DE/2023/0999"))
+    assert blocked.status_code==403 and "read-only" in blocked.json()["detail"].lower()
+    assert client.post("/api/auth/logout").status_code==200
