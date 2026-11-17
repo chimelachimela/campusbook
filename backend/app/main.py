@@ -806,7 +806,7 @@ def student_registrations(user:dict[str,Any]=Depends(get_current_user)):
     require_roles(user,"Student")
     with connect() as db:
         return db.execute(
-            """SELECT cr.id,cr.status,cr.registered_at,c.course_code,c.title AS course_title,c.credit_units,
+            """SELECT cr.id,cr.course_offering_id,cr.status,cr.registered_at,c.course_code,c.title AS course_title,c.credit_units,
             s.name AS semester,a.name AS academic_session,o.section FROM course_registrations cr
             JOIN course_offerings o ON o.id=cr.course_offering_id JOIN courses c ON c.id=o.course_id
             JOIN semesters s ON s.id=o.semester_id JOIN academic_sessions a ON a.id=s.academic_session_id
