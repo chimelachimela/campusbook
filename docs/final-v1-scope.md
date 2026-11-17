@@ -124,7 +124,7 @@ Retain the existing application-level JSONB snapshot workflow and pre-restore sa
 - Grades can be entered in a roster and imported from CSV with preview and validation.
 - Draft, submitted, and finalised grade states work and are audited.
 - No student email is collected or exposed through API responses, browser UI, logs, or backups.
-- Matriculation number validation follows the working pattern `DE/YYYY/NNNN` (DE prefix, four-digit entry year, four-digit sequence), subject to checking punctuation against the exact institutional example.
+- Matriculation number validation follows the working pattern `DE/YYYY/NNNN` (for example, `DE/2023/0001`: DE prefix, four-digit entry year, four-digit sequence). Exact separators should be checked against the user's physical matriculation card before enforcing the regex.
 - Public API requests without a valid session are denied for student/result data and all write/restore actions.
 - Mobile navigation and product identity are clear; text contrast and size are improved.
 - Every visible control either works or is removed.
