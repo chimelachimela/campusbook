@@ -288,7 +288,7 @@ export default function App(){
     {studentModal&&<Modal onClose={()=>setStudentModal(false)} eyebrow="STUDENT RECORD" title={editingStudent?'Edit student':'Add a student'} description="Enter the student's information below."><form onSubmit={saveStudent}><div className="form-grid">
       <label>First name<input required value={studentForm.first_name} onChange={e=>setStudentForm({...studentForm,first_name:e.target.value})}/></label>
       <label>Last name<input required value={studentForm.last_name} onChange={e=>setStudentForm({...studentForm,last_name:e.target.value})}/></label>
-      <label className="full">Matriculation number<input required value={studentForm.matric_number} onChange={e=>setStudentForm({...studentForm,matric_number:e.target.value})} placeholder="e.g. RSU/2024/CPE/001"/></label>
+      <label className="full">Matriculation number<input required value={studentForm.matric_number} onChange={e=>setStudentForm({...studentForm,matric_number:e.target.value})} placeholder="DE/2023/0001"/></label>
       
       <label>Department<select value={studentForm.department} onChange={e=>setStudentForm({...studentForm,department:e.target.value})}>{departments.map(d=><option key={d.id}>{d.name}</option>)}</select></label>
       <label>Level<select value={studentForm.level} onChange={e=>setStudentForm({...studentForm,level:e.target.value})}>{['100','200','300','400','500'].map(v=><option key={v}>{v}</option>)}</select></label>
