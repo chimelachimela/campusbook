@@ -75,6 +75,29 @@ class AccountProvisionInput(BaseModel):
     lecturer_id: int | None = Field(default=None, gt=0)
 
 
+class LecturerInput(BaseModel):
+    staff_number: str = Field(min_length=2,max_length=40)
+    first_name: str = Field(min_length=1,max_length=80)
+    last_name: str = Field(min_length=1,max_length=80)
+    department_id: int = Field(gt=0)
+
+
+class CourseInput(BaseModel):
+    department_id: int = Field(gt=0)
+    course_code: str = Field(min_length=2,max_length=20)
+    title: str = Field(min_length=2,max_length=160)
+    credit_units: int = Field(default=3,ge=1,le=10)
+    level: str = Field(pattern="^(100|200|300|400|500|600)$")
+
+
+class OfferingInput(BaseModel):
+    course_id: int = Field(gt=0)
+    semester_id: int = Field(gt=0)
+    section: str = Field(default="A",min_length=1,max_length=20)
+    lecturer_id: int | None = Field(default=None,gt=0)
+    capacity: int | None = Field(default=None,gt=0)
+
+
 class GradeEntry(BaseModel):
     student_id: int = Field(gt=0)
     score: float = Field(ge=0, le=100)
@@ -720,3 +743,77 @@ def student_results(user:dict[str,Any]=Depends(get_current_user)):
             JOIN academic_sessions a ON a.id=s.academic_session_id
             WHERE cr.student_id=%s AND g.status='Published' ORDER BY a.name DESC,s.name,c.course_code""",
             (user["student_id"],)).fetchall()
+
+
+@app.get("/api/admin/lecturers")
+def list_lecturers(user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        return db.execute(
+            """SELECT l.id,l.staff_number,l.first_name,l.last_name,l.status,d.name AS department
+            FROM lecturers l JOIN departments d ON d.id=l.department_id ORDER BY l.last_name,l.first_name"""
+        ).fetchall()
+
+
+@app.post("/api/admin/lecturers",status_code=201)
+def create_lecturer(payload:LecturerInput,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        try:
+            row=db.execute(
+                """INSERT INTO lecturers (staff_number,first_name,last_name,department_id)
+                VALUES (%s,%s,%s,%s) RETURNING id,staff_number,first_name,last_name,department_id,status""",
+                (payload.staff_number.strip(),payload.first_name.strip(),payload.last_name.strip(),payload.department_id)
+            ).fetchone()
+        except psycopg.errors.UniqueViolation as exc:
+            raise HTTPException(status_code=409,detail="Staff number already exists.") from exc
+        except psycopg.errors.ForeignKeyViolation as exc:
+            raise HTTPException(status_code=404,detail="Department not found.") from exc
+        log_action(db,"Lecturer created",f"Lecturer record {payload.staff_number}")
+    return row
+
+
+@app.get("/api/admin/courses")
+def list_courses(user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        return db.execute(
+            """SELECT c.id,c.course_code,c.title,c.credit_units,c.level,c.is_active,d.id AS department_id,d.name AS department
+            FROM courses c JOIN departments d ON d.id=c.department_id ORDER BY d.name,c.level,c.course_code"""
+        ).fetchall()
+
+
+@app.post("/api/admin/courses",status_code=201)
+def create_course(payload:CourseInput,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        try:
+            row=db.execute(
+                """INSERT INTO courses (department_id,course_code,title,credit_units,level)
+                VALUES (%s,%s,%s,%s,%s) RETURNING *""",
+                (payload.department_id,payload.course_code.strip().upper(),payload.title.strip(),payload.credit_units,payload.level)
+            ).fetchone()
+        except psycopg.errors.UniqueViolation as exc:
+            raise HTTPException(status_code=409,detail="This course code already exists in the department.") from exc
+        except psycopg.errors.ForeignKeyViolation as exc:
+            raise HTTPException(status_code=404,detail="Department not found.") from exc
+        log_action(db,"Course created",payload.course_code.strip().upper())
+    return row
+
+
+@app.post("/api/admin/course-offerings",status_code=201)
+def create_course_offering(payload:OfferingInput,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        try:
+            row=db.execute(
+                """INSERT INTO course_offerings (course_id,semester_id,section,lecturer_id,capacity,status)
+                VALUES (%s,%s,%s,%s,%s,'Open') RETURNING *""",
+                (payload.course_id,payload.semester_id,payload.section.strip().upper(),payload.lecturer_id,payload.capacity)
+            ).fetchone()
+        except psycopg.errors.UniqueViolation as exc:
+            raise HTTPException(status_code=409,detail="This course offering section already exists for the semester.") from exc
+        except psycopg.errors.ForeignKeyViolation as exc:
+            raise HTTPException(status_code=404,detail="Course, semester, or lecturer not found.") from exc
+        log_action(db,"Course offering opened",f"Offering ID {row['id']}")
+    return row
