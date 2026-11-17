@@ -6,7 +6,7 @@ import os
 import re
 import secrets
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,7 @@ import psycopg
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from psycopg.rows import dict_row
+from psycopg import sql
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 from argon2 import PasswordHasher
@@ -22,7 +23,7 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 MIGRATION_FILE = BASE_DIR / "migrations" / "001_initial_postgres.sql"
-BACKUP_VERSION = 1
+BACKUP_VERSION = 2
 PASSWORD_HASHER = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2)
 SESSION_HOURS = 12
 
@@ -204,57 +205,94 @@ def require_roles(user: dict[str, Any], *roles: str) -> None:
         raise HTTPException(status_code=403,detail="You do not have permission to perform this action.")
 
 
+SNAPSHOT_TABLES = (
+    "faculties","departments","students","lecturers","academic_sessions","semesters",
+    "courses","course_offerings","course_registrations","user_accounts","course_grades",
+    "results","activity_logs",
+)
+
+
 def _json_value(value: Any) -> Any:
-    if isinstance(value, (datetime,)):
+    if isinstance(value,(datetime,date)):
         return value.isoformat()
     return value
 
 
 def _snapshot_tables(db: psycopg.Connection) -> dict[str, Any]:
-    tables = {}
-    for table in ("departments", "students", "results", "activity_logs"):
-        rows = db.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()
-        tables[table] = [
-            {key: _json_value(value) for key, value in row.items()}
-            for row in rows
-        ]
-    return {"format_version": BACKUP_VERSION, "tables": tables}
+    tables={}
+    for table in SNAPSHOT_TABLES:
+        rows=db.execute(sql.SQL("SELECT * FROM {} ORDER BY id").format(sql.Identifier(table))).fetchall()
+        tables[table]=[{key:_json_value(value) for key,value in row.items()} for row in rows]
+    return {"format_version":BACKUP_VERSION,"tables":tables}
 
 
-def _store_snapshot(db: psycopg.Connection, snapshot: dict[str, Any]) -> str:
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
-    filename = f"campusbook-{timestamp}.json"
-    db.execute(
-        "INSERT INTO backup_snapshots (filename, snapshot, created_at) VALUES (%s, %s, %s)",
-        (filename, Jsonb(snapshot), datetime.now(timezone.utc)),
-    )
+def _store_snapshot(db: psycopg.Connection,snapshot:dict[str,Any])->str:
+    timestamp=datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
+    filename=f"campusbook-{timestamp}.json"
+    db.execute("INSERT INTO backup_snapshots (filename,snapshot,created_at) VALUES (%s,%s,%s)",(filename,Jsonb(snapshot),datetime.now(timezone.utc)))
     return filename
 
 
-def _validate_snapshot(snapshot: Any) -> dict[str, list[dict[str, Any]]]:
-    required = {
-        "departments": {"name", "code"},
-        "students": {
-            "id", "matric_number", "first_name", "last_name", "email",
-            "department", "level", "status", "created_at",
-        },
-        "results": {"student_id", "course_code", "course_title", "score", "semester"},
-        "activity_logs": {"action", "details", "created_at"},
+def _validate_snapshot(snapshot:Any)->dict[str,list[dict[str,Any]]]:
+    legacy_required={
+        "departments":{"name","code"},
+        "students":{"id","matric_number","first_name","last_name","email","department","level","status","created_at"},
+        "results":{"student_id","course_code","course_title","score","semester"},
+        "activity_logs":{"action","details","created_at"},
     }
-    if not isinstance(snapshot, dict) or snapshot.get("format_version") != BACKUP_VERSION:
-        raise HTTPException(status_code=422, detail="Unsupported or invalid backup format.")
-    tables = snapshot.get("tables")
-    if not isinstance(tables, dict):
-        raise HTTPException(status_code=422, detail="Backup tables are missing.")
-    validated: dict[str, list[dict[str, Any]]] = {}
-    for table, columns in required.items():
-        rows = tables.get(table)
-        if not isinstance(rows, list) or any(
-            not isinstance(row, dict) or not columns.issubset(row.keys()) for row in rows
-        ):
-            raise HTTPException(status_code=422, detail=f"Backup validation failed for {table}.")
-        validated[table] = rows
+    v2_required={
+        "faculties":{"id","name","code","created_at"},
+        "departments":{"id","name","code","faculty_id"},
+        "students":{"id","matric_number","first_name","last_name","email","department","level","status","created_at"},
+        "lecturers":{"id","staff_number","first_name","last_name","department_id","status","created_at"},
+        "academic_sessions":{"id","name","starts_on","ends_on","is_current"},
+        "semesters":{"id","academic_session_id","name","registration_opens_at","registration_closes_at","is_published"},
+        "courses":{"id","department_id","course_code","title","credit_units","level","is_active"},
+        "course_offerings":{"id","course_id","semester_id","section","lecturer_id","capacity","status","created_at"},
+        "course_registrations":{"id","course_offering_id","student_id","status","registered_at","dropped_at"},
+        "user_accounts":{"id","username","password_hash","role","student_id","lecturer_id","is_active","must_change_password","created_at"},
+        "course_grades":{"id","registration_id","score","letter_grade","status","entered_by","submitted_at","approved_at","updated_at"},
+        "results":{"id","student_id","course_code","course_title","score","semester"},
+        "activity_logs":{"id","action","details","created_at"},
+    }
+    if not isinstance(snapshot,dict) or snapshot.get("format_version") not in (1,2):
+        raise HTTPException(status_code=422,detail="Unsupported or invalid backup format.")
+    required=v2_required if snapshot["format_version"]==2 else legacy_required
+    tables=snapshot.get("tables")
+    if not isinstance(tables,dict):
+        raise HTTPException(status_code=422,detail="Backup tables are missing.")
+    validated={}
+    for table,columns in required.items():
+        rows=tables.get(table)
+        if not isinstance(rows,list) or any(not isinstance(row,dict) or not columns.issubset(row.keys()) for row in rows):
+            raise HTTPException(status_code=422,detail=f"Backup validation failed for {table}.")
+        validated[table]=rows
     return validated
+
+
+def _insert_snapshot_rows(db:psycopg.Connection,table:str,rows:list[dict[str,Any]])->None:
+    if not rows:
+        return
+    allowed=set(SNAPSHOT_TABLES)
+    if table not in allowed:
+        raise HTTPException(status_code=422,detail="Backup contains an unsupported table.")
+    for row in rows:
+        columns=list(row.keys())
+        query=sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
+            sql.Identifier(table),
+            sql.SQL(",").join(sql.Identifier(column) for column in columns),
+            sql.SQL(",").join(sql.Placeholder() for _ in columns),
+        )
+        db.execute(query,tuple(row[column] for column in columns))
+
+
+def _reset_snapshot_sequences(db:psycopg.Connection)->None:
+    for table in SNAPSHOT_TABLES:
+        db.execute(
+            sql.SQL("SELECT setval(pg_get_serial_sequence({},'id'),COALESCE((SELECT MAX(id) FROM {}),1),true)").format(
+                sql.Literal(table),sql.Identifier(table)
+            )
+        )
 
 
 @app.get("/api/health")
@@ -451,70 +489,55 @@ def list_backups(user: dict[str, Any] = Depends(get_current_user)) -> list[dict[
 
 
 @app.post("/api/backups/{filename}/restore")
-def restore_backup(filename: str, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
-    require_roles(user, 'Administrator')
-    if not re.fullmatch(r"campusbook-[0-9]{8}-[0-9]{6}-[0-9]{6}\.json", filename):
-        raise HTTPException(status_code=400, detail="Invalid backup filename.")
+def restore_backup(filename:str,user:dict[str,Any]=Depends(get_current_user))->dict[str,Any]:
+    require_roles(user,"Administrator")
+    if not re.fullmatch(r"campusbook-[0-9]{8}-[0-9]{6}-[0-9]{6}\\.json",filename):
+        raise HTTPException(status_code=400,detail="Invalid backup filename.")
     with connect() as db:
-        backup = db.execute(
-            "SELECT snapshot FROM backup_snapshots WHERE filename=%s", (filename,)
-        ).fetchone()
-        if not backup:
-            raise HTTPException(status_code=404, detail="Backup not found.")
-        tables = _validate_snapshot(backup["snapshot"])
-
-        # Preserve the current state as a safety snapshot before changing any records.
-        safety_snapshot = _snapshot_tables(db)
-        safety_filename = _store_snapshot(db, safety_snapshot)
-
-        db.execute("DELETE FROM results")
-        db.execute("DELETE FROM students")
-        db.execute("DELETE FROM departments")
-        db.execute("DELETE FROM activity_logs")
-
-        for row in tables["departments"]:
-            db.execute(
-                "INSERT INTO departments (name, code) VALUES (%s, %s)",
-                (row["name"], row["code"]),
-            )
-
-        student_id_map: dict[int, int] = {}
-        for row in tables["students"]:
-            created_at = row["created_at"]
-            new_row = db.execute(
-                """INSERT INTO students
-                (matric_number, first_name, last_name, email, department, level, status, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-                (row["matric_number"], row["first_name"], row["last_name"], row["email"],
-                 row["department"], row["level"], row["status"], created_at),
-            ).fetchone()
-            student_id_map[int(row["id"])] = new_row["id"]
-
-        for row in tables["results"]:
-            old_student_id = int(row["student_id"])
-            if old_student_id not in student_id_map:
-                raise HTTPException(status_code=422, detail="Backup contains a result for a missing student.")
-            db.execute(
-                """INSERT INTO results (student_id, course_code, course_title, score, semester)
-                VALUES (%s, %s, %s, %s, %s)""",
-                (student_id_map[old_student_id], row["course_code"], row["course_title"],
-                 row["score"], row["semester"]),
-            )
-
-        for row in tables["activity_logs"]:
-            db.execute(
-                "INSERT INTO activity_logs (action, details, created_at) VALUES (%s, %s, %s)",
-                (row["action"], row["details"], row["created_at"]),
-            )
-        log_action(db, "Database restored", f"{filename}; safety snapshot: {safety_filename}")
-
-    return {
-        "restored": True,
-        "filename": filename,
-        "safety_backup": safety_filename,
-        "integrity": "ok",
-    }
-
+        backup=db.execute("SELECT snapshot FROM backup_snapshots WHERE filename=%s",(filename,)).fetchone()
+        if not backup: raise HTTPException(status_code=404,detail="Backup not found.")
+        snapshot=backup["snapshot"]
+        tables=_validate_snapshot(snapshot)
+        safety=_store_snapshot(db,_snapshot_tables(db))
+        if snapshot["format_version"]==1:
+            new_rows=db.execute(
+                """SELECT
+                (SELECT COUNT(*) FROM course_registrations) +
+                (SELECT COUNT(*) FROM user_accounts) +
+                (SELECT COUNT(*) FROM course_offerings) AS count"""
+            ).fetchone()["count"]
+            if new_rows:
+                raise HTTPException(status_code=409,detail="This is a legacy backup. Restore it only before V1 academic accounts and registrations exist.")
+            db.execute("DELETE FROM results")
+            db.execute("DELETE FROM students")
+            db.execute("DELETE FROM departments")
+            db.execute("DELETE FROM activity_logs")
+            for row in tables["departments"]:
+                db.execute("INSERT INTO departments (name,code) VALUES (%s,%s)",(row["name"],row["code"]))
+            student_map={}
+            for row in tables["students"]:
+                inserted=db.execute(
+                    """INSERT INTO students (matric_number,first_name,last_name,email,department,level,status,created_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                    (row["matric_number"],row["first_name"],row["last_name"],row["email"],row["department"],row["level"],row["status"],row["created_at"])
+                ).fetchone()
+                student_map[int(row["id"])]=inserted["id"]
+            for row in tables["results"]:
+                if int(row["student_id"]) not in student_map:
+                    raise HTTPException(status_code=422,detail="Backup contains a result for a missing student.")
+                db.execute("INSERT INTO results (student_id,course_code,course_title,score,semester) VALUES (%s,%s,%s,%s,%s)",
+                    (student_map[int(row["student_id"])],row["course_code"],row["course_title"],row["score"],row["semester"]))
+            for row in tables["activity_logs"]:
+                db.execute("INSERT INTO activity_logs (action,details,created_at) VALUES (%s,%s,%s)",(row["action"],row["details"],row["created_at"]))
+        else:
+            for table in ("course_grades","course_registrations","course_offerings","courses","semesters","academic_sessions","user_accounts","lecturers","results","students","departments","faculties","activity_logs"):
+                db.execute(sql.SQL("DELETE FROM {}").format(sql.Identifier(table)))
+            for table in ("faculties","departments","students","lecturers","academic_sessions","semesters","courses","course_offerings","course_registrations","user_accounts","course_grades","results","activity_logs"):
+                _insert_snapshot_rows(db,table,tables[table])
+            _reset_snapshot_sequences(db)
+            db.execute("UPDATE user_sessions SET revoked_at=NOW() WHERE revoked_at IS NULL")
+        log_action(db,"Database restored",f"{filename}; safety snapshot: {safety}")
+    return {"restored":True,"filename":filename,"safety_backup":safety,"integrity":"ok"}
 
 @app.get("/api/activity")
 def activity(user: dict[str, Any] = Depends(get_current_user)) -> list[dict[str, Any]]:
