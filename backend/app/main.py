@@ -620,7 +620,7 @@ def logout(request:Request,response:Response):
     token=request.cookies.get("campusbook_session")
     if token:
         with connect() as db: db.execute("UPDATE user_sessions SET revoked_at=%s WHERE token_hash=%s AND revoked_at IS NULL",(datetime.now(timezone.utc),_session_digest(token)))
-    response.delete_cookie("campusbook_session",path="/",secure=True,httponly=True,samesite="none")
+    response.delete_cookie("campusbook_session",path="/",secure=True,httponly=True,samesite="lax")
     return {"logged_out":True}
 
 
