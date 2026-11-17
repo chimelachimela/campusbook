@@ -46,7 +46,6 @@ class StudentInput(BaseModel):
     matric_number: str = Field(min_length=2, max_length=40)
     first_name: str = Field(min_length=1, max_length=80)
     last_name: str = Field(min_length=1, max_length=80)
-    email: str = Field(min_length=3, max_length=160)
     department: str = Field(min_length=1, max_length=100)
     level: str = Field(min_length=1, max_length=20)
     status: str = Field(default="Active", pattern="^(Active|Inactive)$")
@@ -198,11 +197,11 @@ def list_students(search: str = Query(default="", max_length=100)) -> list[dict[
     term = f"%{search.strip()}%"
     with connect() as db:
         rows = db.execute(
-            """SELECT * FROM students
+            """SELECT id, matric_number, first_name, last_name, department, level, status, created_at FROM students
             WHERE matric_number ILIKE %s OR first_name ILIKE %s OR last_name ILIKE %s
-            OR department ILIKE %s OR email ILIKE %s
+            OR department ILIKE %s
             ORDER BY id DESC""",
-            (term, term, term, term, term),
+            (term, term, term, term),
         ).fetchall()
     return rows
 
@@ -214,10 +213,10 @@ def create_student(student: StudentInput) -> dict[str, Any]:
             row = db.execute(
                 """INSERT INTO students
                 (matric_number, first_name, last_name, email, department, level, status, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING *""",
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id, matric_number, first_name, last_name, department, level, status, created_at""",
                 (
                     student.matric_number, student.first_name, student.last_name,
-                    student.email, student.department, student.level, student.status,
+                    'not-collected@invalid.example', student.department, student.level, student.status,
                     datetime.now(timezone.utc),
                 ),
             ).fetchone()
@@ -233,8 +232,8 @@ def update_student(student_id: int, student: StudentInput) -> dict[str, Any]:
         try:
             row = db.execute(
                 """UPDATE students SET matric_number=%s, first_name=%s, last_name=%s,
-                email=%s, department=%s, level=%s, status=%s WHERE id=%s RETURNING *""",
-                (student.matric_number, student.first_name, student.last_name, student.email,
+                email='not-collected@invalid.example', department=%s, level=%s, status=%s WHERE id=%s RETURNING id, matric_number, first_name, last_name, department, level, status, created_at""",
+                (student.matric_number, student.first_name, student.last_name,
                  student.department, student.level, student.status, student_id),
             ).fetchone()
         except psycopg.errors.UniqueViolation as exc:
