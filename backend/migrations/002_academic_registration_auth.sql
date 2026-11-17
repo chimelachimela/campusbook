@@ -14,6 +14,13 @@ ALTER TABLE departments
 
 CREATE INDEX IF NOT EXISTS idx_departments_faculty_id ON departments(faculty_id);
 
+-- Give every student a relational department key; retain the legacy text label for compatibility.
+ALTER TABLE students ADD COLUMN IF NOT EXISTS department_id BIGINT REFERENCES departments(id) ON DELETE RESTRICT;
+UPDATE students s SET department_id=d.id FROM departments d WHERE s.department=d.name AND s.department_id IS NULL;
+ALTER TABLE students ALTER COLUMN department_id SET NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_students_department_id ON students(department_id);
+
+
 CREATE TABLE IF NOT EXISTS lecturers (
     id BIGSERIAL PRIMARY KEY,
     staff_number VARCHAR(40) NOT NULL UNIQUE,
