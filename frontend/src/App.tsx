@@ -17,6 +17,10 @@ type Student = {
 };
 type Department = {id:number;name:string;code:string;faculty_id:number;faculty_name:string;student_count:number};
 type Faculty = {id:number;name:string;code:string;department_count:number};
+type Course={id:number;course_code:string;title:string;credit_units:number;level:string;department:string;department_id:number};
+type Lecturer={id:number;staff_number:string;first_name:string;last_name:string;department:string};
+type AcademicSession={id:number;name:string;is_current:boolean};
+type Semester={id:number;academic_session_id:number;name:string};
 type GradeSubmission={offering_id:number;course_code:string;course_title:string;section:string;semester:string;academic_session:string;lecturer_first_name:string|null;lecturer_last_name:string|null;roster_count:number;submitted_count:number;published_count:number};
 type Result = {id:number;student_id:number;course_code:string;course_title:string;score:number;semester:string;matric_number:string;first_name:string;last_name:string};
 type Backup = {filename:string;size_bytes:number;modified_at:string};
@@ -107,6 +111,10 @@ export default function App(){
   const [departments,setDepartments]=useState<Department[]>([]);
   const [faculties,setFaculties]=useState<Faculty[]>([]);
   const [gradeSubmissions,setGradeSubmissions]=useState<GradeSubmission[]>([]);
+  const [courses,setCourses]=useState<Course[]>([]);
+  const [lecturers,setLecturers]=useState<Lecturer[]>([]);
+  const [academicSessions,setAcademicSessions]=useState<AcademicSession[]>([]);
+  const [semesters,setSemesters]=useState<Semester[]>([]);
   const [results,setResults]=useState<Result[]>([]);
   const [backups,setBackups]=useState<Backup[]>([]);
   const [activity,setActivity]=useState<ActivityItem[]>([]);
@@ -125,16 +133,22 @@ export default function App(){
   const [departmentModal,setDepartmentModal]=useState(false);
   const [departmentForm,setDepartmentForm]=useState({name:'',code:'',faculty_id:''});
   const [saving,setSaving]=useState(false);
+  const [courseForm,setCourseForm]=useState({department_id:'',course_code:'',title:'',credit_units:'3',level:'300'});
+  const [lecturerForm,setLecturerForm]=useState({staff_number:'',first_name:'',last_name:'',department_id:'',username:'',password:''});
+  const [sessionForm,setSessionForm]=useState({name:'2026/2027',starts_on:'',ends_on:'',is_current:true});
+  const [semesterForm,setSemesterForm]=useState({academic_session_id:'',name:'First Semester',registration_opens_at:'',registration_closes_at:''});
+  const [offeringForm,setOfferingForm]=useState({course_id:'',semester_id:'',lecturer_id:'',section:'A',capacity:'40'});
+  const [accountForm,setAccountForm]=useState({role:'Student',record_id:'',username:'',password:''});
 
   async function refresh(){
     setLoading(true);setError('');
     try{
-      const [d,s,de,fa,r,b,a,gs]=await Promise.all([
+      const [d,s,de,fa,r,b,a,gs,cs,ls,as,ss]=await Promise.all([
         requestWithRetry<Dashboard>('/api/dashboard'),requestWithRetry<Student[]>('/api/students'),
         requestWithRetry<Department[]>('/api/departments'),requestWithRetry<Faculty[]>('/api/faculties'),requestWithRetry<Result[]>('/api/results'),
-        requestWithRetry<Backup[]>('/api/backups'),requestWithRetry<ActivityItem[]>('/api/activity'),requestWithRetry<GradeSubmission[]>('/api/admin/grade-submissions'),
+        requestWithRetry<Backup[]>('/api/backups'),requestWithRetry<ActivityItem[]>('/api/activity'),requestWithRetry<GradeSubmission[]>('/api/admin/grade-submissions'),requestWithRetry<Course[]>('/api/admin/courses'),requestWithRetry<Lecturer[]>('/api/admin/lecturers'),requestWithRetry<AcademicSession[]>('/api/admin/academic-sessions'),requestWithRetry<Semester[]>('/api/admin/semesters'),
       ]);
-      setDashboard(d);setStudents(s);setDepartments(de);setFaculties(fa);setResults(r);setBackups(b);setActivity(a);setGradeSubmissions(gs);
+      setDashboard(d);setStudents(s);setDepartments(de);setFaculties(fa);setResults(r);setBackups(b);setActivity(a);setGradeSubmissions(gs);setCourses(cs);setLecturers(ls);setAcademicSessions(as);setSemesters(ss);
     }catch(e){setError(e instanceof Error?e.message:'Could not connect to the API.');}
     finally{setLoading(false);}
   }
@@ -180,6 +194,13 @@ export default function App(){
     try{await request('/api/departments',{method:'POST',body:JSON.stringify({...departmentForm,faculty_id:Number(departmentForm.faculty_id)})});setDepartmentModal(false);setDepartmentForm({name:'',code:'',faculty_id:''});setNotice('Department added.');await refresh();}
     catch(e){setNotice(e instanceof Error?e.message:'Could not add department.');}finally{setSaving(false);}
   }
+
+  async function createCourse(e:FormEvent){e.preventDefault();setSaving(true);try{await request('/api/admin/courses',{method:'POST',body:JSON.stringify({...courseForm,department_id:Number(courseForm.department_id),credit_units:Number(courseForm.credit_units)})});setCourseForm({department_id:'',course_code:'',title:'',credit_units:'3',level:'300'});setNotice('Course added to catalogue.');await refresh();}catch(e){setNotice(e instanceof Error?e.message:'Could not create course.');}finally{setSaving(false);}}
+  async function createLecturer(e:FormEvent){e.preventDefault();setSaving(true);try{const lecturer=await request<Lecturer>('/api/admin/lecturers',{method:'POST',body:JSON.stringify({staff_number:lecturerForm.staff_number,first_name:lecturerForm.first_name,last_name:lecturerForm.last_name,department_id:Number(lecturerForm.department_id)})});await request('/api/admin/accounts',{method:'POST',body:JSON.stringify({username:lecturerForm.username,password:lecturerForm.password,role:'Lecturer',lecturer_id:lecturer.id})});setLecturerForm({staff_number:'',first_name:'',last_name:'',department_id:'',username:'',password:''});setNotice('Lecturer record and sign-in account created.');await refresh();}catch(e){setNotice(e instanceof Error?e.message:'Lecturer setup failed. Check whether the lecturer record was created before retrying.');}finally{setSaving(false);}}
+  async function createSession(e:FormEvent){e.preventDefault();setSaving(true);try{await request('/api/admin/academic-sessions',{method:'POST',body:JSON.stringify({name:sessionForm.name,starts_on:sessionForm.starts_on||null,ends_on:sessionForm.ends_on||null,is_current:sessionForm.is_current})});setNotice('Academic session created.');await refresh();}catch(e){setNotice(e instanceof Error?e.message:'Could not create academic session.');}finally{setSaving(false);}}
+  async function createSemester(e:FormEvent){e.preventDefault();setSaving(true);try{await request('/api/admin/semesters',{method:'POST',body:JSON.stringify({academic_session_id:Number(semesterForm.academic_session_id),name:semesterForm.name,registration_opens_at:semesterForm.registration_opens_at?new Date(semesterForm.registration_opens_at).toISOString():null,registration_closes_at:semesterForm.registration_closes_at?new Date(semesterForm.registration_closes_at).toISOString():null,is_published:true})});setNotice('Semester created.');await refresh();}catch(e){setNotice(e instanceof Error?e.message:'Could not create semester.');}finally{setSaving(false);}}
+  async function createOffering(e:FormEvent){e.preventDefault();setSaving(true);try{await request('/api/admin/course-offerings',{method:'POST',body:JSON.stringify({course_id:Number(offeringForm.course_id),semester_id:Number(offeringForm.semester_id),lecturer_id:Number(offeringForm.lecturer_id),section:offeringForm.section,capacity:offeringForm.capacity?Number(offeringForm.capacity):null})});setNotice('Course offering opened for registration.');setOfferingForm({course_id:'',semester_id:'',lecturer_id:'',section:'A',capacity:'40'});await refresh();}catch(e){setNotice(e instanceof Error?e.message:'Could not create course offering.');}finally{setSaving(false);}}
+  async function provisionStudent(e:FormEvent){e.preventDefault();setSaving(true);try{await request('/api/admin/accounts',{method:'POST',body:JSON.stringify({username:accountForm.username,password:accountForm.password,role:'Student',student_id:Number(accountForm.record_id)})});setAccountForm({role:'Student',record_id:'',username:'',password:''});setNotice('Student sign-in account created.');}catch(e){setNotice(e instanceof Error?e.message:'Could not create student account.');}finally{setSaving(false);}}
   async function approveGrades(id:number){try{await request('/api/admin/offerings/'+id+'/approve',{method:'POST'});setNotice('Submitted grades approved and published.');await refresh();}catch(e){setNotice(e instanceof Error?e.message:'Could not approve grades.');}}
   async function saveResult(e:FormEvent){
     e.preventDefault();setSaving(true);
@@ -192,7 +213,7 @@ export default function App(){
     catch(e){setNotice(e instanceof Error?e.message:'Could not delete result.');}
   }
 
-  const nav=[{label:'Overview',icon:LayoutDashboard},{label:'Students',icon:Users},{label:'Departments',icon:Building2},{label:'Results',icon:BookOpen},{label:'Backup & Recovery',icon:Database},{label:'Activity Log',icon:Activity}];
+  const nav=[{label:'Overview',icon:LayoutDashboard},{label:'Students',icon:Users},{label:'Departments',icon:Building2},{label:'Academic Setup',icon:BookOpen},{label:'Results',icon:BookOpen},{label:'Backup & Recovery',icon:Database},{label:'Activity Log',icon:Activity}];
   if(authLoading)return <div className="auth-screen"><div className="auth-card"><div className="portal-brand"><div className="brand-mark"><GraduationCap size={21}/></div><span>campus<span className="brand-light">book</span></span></div><p>Checking your session…</p></div></div>;
   if(!user)return <div className="auth-screen"><form className="auth-card" onSubmit={submitLogin}><div className="portal-brand"><div className="brand-mark"><GraduationCap size={21}/></div><span>campus<span className="brand-light">book</span></span></div><p className="eyebrow">STUDENT RECORDS & COURSE REGISTRATION</p><h1>Sign in to CampusBook</h1><p className="auth-description">Use the account provided by your institution.</p>{loginError&&<div className="portal-error">{loginError}</div>}<label>Username<input autoComplete="username" value={loginUsername} onChange={e=>setLoginUsername(e.target.value)} required/></label><label>Password<input type="password" autoComplete="current-password" value={loginPassword} onChange={e=>setLoginPassword(e.target.value)} required/></label><button className="primary-button" type="submit">Sign in</button><small>Accounts are created by the institution. Public sign-up is disabled.</small></form></div>;
   if(user.role==='Student')return <StudentPortal user={user} onLogout={()=>void signOut()}/>;
