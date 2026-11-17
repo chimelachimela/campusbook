@@ -146,7 +146,8 @@ def initialize_database() -> None:
     migrations = sorted(MIGRATION_FILE.parent.glob("*.sql"))
     with connect() as db:
         for migration in migrations:
-            statements = [part.strip() for part in migration.read_text().split(";") if part.strip()]
+            source = "\\n".join(line.split("--",1)[0] for line in migration.read_text().splitlines())
+            statements = [part.strip() for part in source.split(";") if part.strip()]
             for statement in statements:
                 db.execute(statement)
         with db.cursor() as cursor:
