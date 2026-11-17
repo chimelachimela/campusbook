@@ -111,6 +111,7 @@ class GradeRosterInput(BaseModel):
 class DepartmentInput(BaseModel):
     name: str = Field(min_length=2, max_length=100)
     code: str = Field(min_length=2, max_length=12)
+    faculty_id: int = Field(gt=0)
 
 
 class ResultInput(BaseModel):
@@ -142,10 +143,12 @@ def initialize_database() -> None:
     """Apply the checked-in schema migration. Run as the Neon owner, not the app role."""
     if not MIGRATION_FILE.is_file():
         raise RuntimeError(f"Database migration not found: {MIGRATION_FILE}")
-    statements = [part.strip() for part in MIGRATION_FILE.read_text().split(";") if part.strip()]
+    migrations = sorted(MIGRATION_FILE.parent.glob("*.sql"))
     with connect() as db:
-        for statement in statements:
-            db.execute(statement)
+        for migration in migrations:
+            statements = [part.strip() for part in migration.read_text().split(";") if part.strip()]
+            for statement in statements:
+                db.execute(statement)
         with db.cursor() as cursor:
             cursor.executemany(
                 "INSERT INTO departments (name, code) VALUES (%s, %s) ON CONFLICT DO NOTHING",
@@ -236,7 +239,7 @@ def _store_snapshot(db: psycopg.Connection,snapshot:dict[str,Any])->str:
 def _validate_snapshot(snapshot:Any)->dict[str,list[dict[str,Any]]]:
     legacy_required={
         "departments":{"name","code"},
-        "students":{"id","matric_number","first_name","last_name","email","department","level","status","created_at"},
+        "students":{"id","matric_number","first_name","last_name","email","department","department_id","level","status","created_at"},
         "results":{"student_id","course_code","course_title","score","semester"},
         "activity_logs":{"action","details","created_at"},
     }
@@ -332,11 +335,14 @@ def list_students(search: str = Query(default="", max_length=100), user: dict[st
     term = f"%{search.strip()}%"
     with connect() as db:
         rows = db.execute(
-            """SELECT id, matric_number, first_name, last_name, department, level, status, created_at FROM students
-            WHERE matric_number ILIKE %s OR first_name ILIKE %s OR last_name ILIKE %s
-            OR department ILIKE %s
-            ORDER BY id DESC""",
-            (term, term, term, term),
+            """SELECT s.id,s.matric_number,s.first_name,s.last_name,s.department,s.department_id,
+            d.faculty_id,f.name AS faculty,s.level,s.status,s.created_at
+            FROM students s JOIN departments d ON d.id=s.department_id
+            JOIN faculties f ON f.id=d.faculty_id
+            WHERE s.matric_number ILIKE %s OR s.first_name ILIKE %s OR s.last_name ILIKE %s
+            OR s.department ILIKE %s OR f.name ILIKE %s
+            ORDER BY s.id DESC""",
+            (term, term, term, term, term),
         ).fetchall()
     return rows
 
@@ -345,16 +351,17 @@ def list_students(search: str = Query(default="", max_length=100), user: dict[st
 def create_student(student: StudentInput, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     require_roles(user, 'Administrator')
     with connect() as db:
+        department = db.execute("SELECT id FROM departments WHERE name=%s",(student.department,)).fetchone()
+        if not department:
+            raise HTTPException(status_code=404,detail="Department not found.")
         try:
             row = db.execute(
                 """INSERT INTO students
-                (matric_number, first_name, last_name, email, department, level, status, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id, matric_number, first_name, last_name, department, level, status, created_at""",
-                (
-                    student.matric_number, student.first_name, student.last_name,
-                    'not-collected@invalid.example', student.department, student.level, student.status,
-                    datetime.now(timezone.utc),
-                ),
+                (matric_number,first_name,last_name,email,department,department_id,level,status,created_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING id,matric_number,first_name,last_name,department,department_id,level,status,created_at""",
+                (student.matric_number,student.first_name,student.last_name,'not-collected@invalid.example',
+                 student.department,department["id"],student.level,student.status,datetime.now(timezone.utc)),
             ).fetchone()
         except psycopg.errors.UniqueViolation as exc:
             raise HTTPException(status_code=409, detail="Matriculation number already exists.") from exc
@@ -366,12 +373,16 @@ def create_student(student: StudentInput, user: dict[str, Any] = Depends(get_cur
 def update_student(student_id: int, student: StudentInput, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     require_roles(user, 'Administrator')
     with connect() as db:
+        department = db.execute("SELECT id FROM departments WHERE name=%s",(student.department,)).fetchone()
+        if not department:
+            raise HTTPException(status_code=404,detail="Department not found.")
         try:
             row = db.execute(
-                """UPDATE students SET matric_number=%s, first_name=%s, last_name=%s,
-                email='not-collected@invalid.example', department=%s, level=%s, status=%s WHERE id=%s RETURNING id, matric_number, first_name, last_name, department, level, status, created_at""",
-                (student.matric_number, student.first_name, student.last_name,
-                 student.department, student.level, student.status, student_id),
+                """UPDATE students SET matric_number=%s,first_name=%s,last_name=%s,
+                email='not-collected@invalid.example',department=%s,department_id=%s,level=%s,status=%s
+                WHERE id=%s RETURNING id,matric_number,first_name,last_name,department,department_id,level,status,created_at""",
+                (student.matric_number,student.first_name,student.last_name,student.department,
+                 department["id"],student.level,student.status,student_id),
             ).fetchone()
         except psycopg.errors.UniqueViolation as exc:
             raise HTTPException(status_code=409, detail="Matriculation number already exists.") from exc
@@ -409,8 +420,8 @@ def create_department(department: DepartmentInput, user: dict[str, Any] = Depend
     with connect() as db:
         try:
             row = db.execute(
-                "INSERT INTO departments (name, code) VALUES (%s, %s) RETURNING *",
-                (department.name, department.code.upper()),
+                "INSERT INTO departments (name, code, faculty_id) VALUES (%s, %s, %s) RETURNING *",
+                (department.name, department.code.upper(), department.faculty_id),
             ).fetchone()
         except psycopg.errors.UniqueViolation as exc:
             raise HTTPException(status_code=409, detail="Department name or code already exists.") from exc
@@ -516,10 +527,12 @@ def restore_backup(filename:str,user:dict[str,Any]=Depends(get_current_user))->d
                 db.execute("INSERT INTO departments (name,code) VALUES (%s,%s)",(row["name"],row["code"]))
             student_map={}
             for row in tables["students"]:
+                dept=db.execute("SELECT id FROM departments WHERE name=%s",(row["department"],)).fetchone()
+                if not dept: raise HTTPException(status_code=422,detail="Legacy backup refers to a missing department.")
                 inserted=db.execute(
-                    """INSERT INTO students (matric_number,first_name,last_name,email,department,level,status,created_at)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
-                    (row["matric_number"],row["first_name"],row["last_name"],row["email"],row["department"],row["level"],row["status"],row["created_at"])
+                    """INSERT INTO students (matric_number,first_name,last_name,email,department,department_id,level,status,created_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                    (row["matric_number"],row["first_name"],row["last_name"],row["email"],row["department"],dept["id"],row["level"],row["status"],row["created_at"])
                 ).fetchone()
                 student_map[int(row["id"])]=inserted["id"]
             for row in tables["results"]:
