@@ -32,24 +32,26 @@ class ApiError extends Error {
   constructor(message:string,readonly status:number){super(message);this.name='ApiError';}
 }
 async function request<T=any>(path:string, options?:RequestInit):Promise<T> {
-  const response = await fetch(API+path,{credentials:'include',...options,headers:{'Content-Type':'application/json',...(options?.headers||{})}});
-  if(!response.ok){
-    const body=await response.json().catch(()=>({}));
-    throw new ApiError(body.detail||(response.status===502||response.status===503||response.status===504?'CampusBook is starting up.':'The request could not be completed.'),response.status);
-  }
+  const controller=new AbortController();
+  const timeout=window.setTimeout(()=>controller.abort(),15000);
+  let response:Response;
+  try{
+    response=await fetch(API+path,{credentials:'include',...options,signal:controller.signal,headers:{'Content-Type':'application/json',...(options?.headers||{})}});
+  }finally{window.clearTimeout(timeout);}
+  if(!response.ok){const body=await response.json().catch(()=>({}));throw new ApiError(body.detail||(response.status===502||response.status===503||response.status===504?'CampusBook is starting up.':'The request could not be completed.'),response.status);}
   if(response.status===204)return undefined as T;
   return response.json();
 }
 const wait=(ms:number)=>new Promise(resolve=>window.setTimeout(resolve,ms));
-async function requestWithRetry<T>(path:string,attempts=8):Promise<T>{
+async function requestWithRetry<T>(path:string,attempts=4,options?:RequestInit):Promise<T>{
   let lastError:unknown;
   for(let attempt=0;attempt<attempts;attempt++){
-    try{return await request<T>(path);}
+    try{return await request<T>(path,options);}
     catch(error){
       lastError=error;
-      const transient=(error instanceof ApiError&&[500,502,503,504].includes(error.status))||error instanceof TypeError;
+      const transient=(error instanceof ApiError&&[500,502,503,504].includes(error.status))||error instanceof TypeError||(error instanceof DOMException&&error.name==='AbortError');
       if(!transient||attempt===attempts-1)throw error;
-      await wait(Math.min(2000*(2**attempt),12000));
+      await wait(Math.min(2000*(2**attempt),8000));
     }
   }
   throw lastError instanceof Error?lastError:new Error('Could not connect to CampusBook.');
@@ -66,7 +68,7 @@ function PortalFrame({user,onLogout,children}:{user:AuthUser;onLogout:()=>void;c
 function StudentPortal({user,onLogout}:{user:AuthUser;onLogout:()=>void}){
  const [offerings,setOfferings]=useState<Offering[]>([]),[registrations,setRegistrations]=useState<any[]>([]),[results,setResults]=useState<any[]>([]);
  const [loading,setLoading]=useState(true),[error,setError]=useState(''),[notice,setNotice]=useState('');
- async function load(){setLoading(true);setError('');try{const [o,r,g]=await Promise.all([request<Offering[]>('/api/course-offerings'),request<any[]>('/api/student/registrations'),request<any[]>('/api/student/results')]);setOfferings(o);setRegistrations(r);setResults(g);}catch(e){setError(e instanceof Error?e.message:'Could not load academic information.');}finally{setLoading(false);}}
+ async function load(){setLoading(true);setError('');try{const [o,r,g]=await Promise.all([requestWithRetry<Offering[]>('/api/course-offerings'),requestWithRetry<any[]>('/api/student/registrations'),requestWithRetry<any[]>('/api/student/results')]);setOfferings(o);setRegistrations(r);setResults(g);}catch(e){setError(e instanceof Error?e.message:'Could not load academic information.');}finally{setLoading(false);}}
  useEffect(()=>{void load();},[]);
  async function register(id:number){try{await request('/api/student/course-offerings/'+id+'/register',{method:'POST'});setNotice('Course registered.');await load();}catch(e){setNotice(e instanceof Error?e.message:'Registration failed.');}}
  async function drop(id:number){if(!window.confirm('Drop this course?'))return;try{await request('/api/student/course-offerings/'+id+'/register',{method:'DELETE'});setNotice('Course dropped.');await load();}catch(e){setNotice(e instanceof Error?e.message:'Could not drop course.');}}
@@ -82,7 +84,7 @@ function LecturerPortal({user,onLogout}:{user:AuthUser;onLogout:()=>void}){
  const [offerings,setOfferings]=useState<Offering[]>([]),[selected,setSelected]=useState<number|''>(''),[roster,setRoster]=useState<RosterRow[]>([]);
  const [scores,setScores]=useState<Record<number,string>>({}),[loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[notice,setNotice]=useState(''),[error,setError]=useState('');
  async function loadOfferings(){setLoading(true);setError('');try{const data=await request<Offering[]>('/api/course-offerings');setOfferings(data);if(data.length&&!selected)setSelected(data[0].id);}catch(e){setError(e instanceof Error?e.message:'Could not load assigned courses.');}finally{setLoading(false);}}
- async function loadRoster(id:number){try{const data=await request<RosterRow[]>('/api/lecturer/offerings/'+id+'/roster');setRoster(data);setScores(Object.fromEntries(data.map(r=>[r.student_id,r.score===null?'':String(r.score)])));}catch(e){setError(e instanceof Error?e.message:'Could not load class roster.');}}
+ async function loadRoster(id:number){try{const data=await requestWithRetry<RosterRow[]>('/api/lecturer/offerings/'+id+'/roster');setRoster(data);setScores(Object.fromEntries(data.map(r=>[r.student_id,r.score===null?'':String(r.score)])));}catch(e){setError(e instanceof Error?e.message:'Could not load class roster.');}}
  useEffect(()=>{void loadOfferings();},[]);
  useEffect(()=>{if(selected)void loadRoster(selected);},[selected]);
  async function importCsv(file?:File){if(!file||!selected)return;const lines=(await file.text()).trim().split(/\r?\n/);const parsed=new Map<string,string>();for(const line of lines.slice(1)){const parts=line.split(',').map(x=>x.trim());if(parts[0]&&parts[1])parsed.set(parts[0],parts[1]);}let matched=0;const next={...scores};for(const row of roster){if(parsed.has(row.matric_number)){next[row.student_id]=parsed.get(row.matric_number)!;matched++;}}setScores(next);setNotice('Imported '+matched+' matching scores. Review before saving.');}
@@ -152,11 +154,11 @@ export default function App(){
     }catch(e){setError(e instanceof Error?e.message:'Could not connect to the API.');}
     finally{setLoading(false);}
   }
-  useEffect(()=>{request<AuthUser>('/api/auth/me').then(setUser).catch(()=>setUser(null)).finally(()=>setAuthLoading(false));},[]);
+  useEffect(()=>{requestWithRetry<AuthUser>('/api/auth/me').then(setUser).catch(()=>setUser(null)).finally(()=>setAuthLoading(false));},[]);
   useEffect(()=>{if(user?.role==='Administrator')void refresh();},[user]);
   useEffect(()=>{if(!notice)return;const t=window.setTimeout(()=>setNotice(''),4000);return()=>window.clearTimeout(t);},[notice]);
 
-  async function submitLogin(e:FormEvent){e.preventDefault();setLoginError('');try{const account=await request<AuthUser>('/api/auth/login',{method:'POST',body:JSON.stringify({username:loginUsername,password:loginPassword})});setUser(account);setLoginPassword('');}catch(e){setLoginError(e instanceof Error?e.message:'Unable to sign in.');}}
+  async function submitLogin(e:FormEvent){e.preventDefault();setLoginError('');try{const account=await requestWithRetry<AuthUser>('/api/auth/login',4,{method:'POST',body:JSON.stringify({username:loginUsername,password:loginPassword})});setUser(account);setLoginPassword('');}catch(e){setLoginError(e instanceof Error?e.message:'Unable to sign in.');}}
   async function signOut(){try{await request('/api/auth/logout',{method:'POST'});}finally{setUser(null);setDashboard(null);setStudents([]);setResults([]);setBackups([]);setActivity([]);}}
   const filteredStudents=useMemo(()=>students.filter(s=>{
     const matchesSearch=[s.first_name,s.last_name,s.matric_number,s.department].join(' ').toLowerCase().includes(search.toLowerCase());
