@@ -1,6 +1,22 @@
 # CampusBook
 
-A React + FastAPI student records management system backed by PostgreSQL.
+A university student records, course registration and results management system built as a client/server academic project.
+
+## Live demonstration
+
+- **Application:** https://campusbook-frontend.onrender.com
+- **API documentation:** https://campusbook-api-live.onrender.com/docs
+- **API health:** https://campusbook-api-live.onrender.com/api/health
+
+The frontend is a Render Static Site. The free FastAPI service may sleep after 15 minutes without inbound traffic; the first request after idle can take about a minute. The Vercel deployment is currently a protected preview and is not the public live URL.
+
+## Version 1 roles
+
+- **Administrator:** manages student and academic records, course offerings, accounts, result approval and backups.
+- **Lecturer:** views assigned class rosters, imports/enters marks, and submits results.
+- **Student:** registers for eligible courses and views their own published results.
+
+Public account sign-up is disabled. Student and lecturer accounts are provisioned by an administrator. Student email is not collected.
 
 ## Architecture
 
@@ -8,39 +24,44 @@ A React + FastAPI student records management system backed by PostgreSQL.
 React + TypeScript + Vite
         | HTTPS / JSON
         v
-FastAPI application on Render
+FastAPI application server
         | psycopg / TLS
         v
 Neon PostgreSQL
-        +-- departments
-        +-- students
-        +-- results
-        +-- activity log
-        +-- logical JSON backup snapshots
+        +-- faculties / departments
+        +-- students / lecturers
+        +-- academic sessions / semesters
+        +-- courses / course offerings
+        +-- student course registrations
+        +-- course grades / approval state
+        +-- accounts / sessions / activity log
+        +-- versioned JSONB backup snapshots
 ```
+
+See [docs/architecture.md](docs/architecture.md) for the complete architecture and API flow, and [docs/final-v1-scope.md](docs/final-v1-scope.md) for the agreed project boundary.
 
 ## Features
 
-- Dashboard with student, active-record, department, and backup counts
-- Student create, search, update, and delete
-- Department directory and student counts
-- Course result recording, listing, and deletion
-- Activity log
-- Logical JSONB database snapshots with validation and transactional restore
-- A pre-restore safety snapshot
-- Responsive React administration interface
+- Faculty → department → student organisation
+- Student records with DE/year/four-digit matriculation format
+- Course catalogue, academic sessions and semesters
+- Student self-service course registration
+- Lecturer assignment and class roster
+- CSV and grid-based grade entry, submission and administrator approval
+- Role-based sign-in for administrators, lecturers and students
+- Application-level JSONB backup, validation and recovery
+- Responsive role-specific interfaces
 
 ## Database setup
 
-The production database schema is in `backend/migrations/001_initial_postgres.sql`.
+Database migrations are in `backend/migrations/`. Apply them in filename order as the database owner:
 
-1. Create a Neon PostgreSQL project and database.
-2. Create a restricted runtime role (the deployment role should not own the schema).
-3. Connect as the database owner and apply the migration SQL once.
-4. Set `DATABASE_URL` on the API service to the runtime role's connection string.
-5. Do not set `CAMPUSBOOK_AUTO_MIGRATE=true` in production. The app role intentionally does not have schema-owner privileges.
+1. `001_initial_postgres.sql`
+2. `002_academic_registration_auth.sql`
 
-The application uses `psycopg` and PostgreSQL. SQLite is no longer used by the deployed backend.
+The production runtime role must not own the schema. Set `DATABASE_URL` to the restricted application role's connection string. Do not set `CAMPUSBOOK_AUTO_MIGRATE=true` in production.
+
+The first administrator is created once through the bootstrap endpoint using `CAMPUSBOOK_BOOTSTRAP_SECRET`. Keep that secret private and remove/rotate it after the initial administrator is created.
 
 ## Local development
 
@@ -53,7 +74,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Set `DATABASE_URL` to a local PostgreSQL database and apply `migrations/001_initial_postgres.sql` as its owner. Then run:
+Set `DATABASE_URL` to a disposable PostgreSQL database. Apply the migrations as the database owner, then run:
 
 ```bash
 uvicorn app.main:app --reload
@@ -69,11 +90,11 @@ npm install
 npm run dev
 ```
 
-Set `VITE_API_URL` to the API origin when building for deployment. The local default is `http://localhost:8000`.
+Set `VITE_API_URL` to the API origin. The local default is `http://localhost:8000`.
 
 ## Tests
 
-Backend integration tests require a disposable PostgreSQL database in `DATABASE_URL`. They apply the schema migration, reset test tables, and exercise CRUD, department/result relationships, backup/restore, and activity logging.
+Backend integration tests require a disposable PostgreSQL database in `DATABASE_URL`. They apply migrations, reset test tables and exercise authentication, role restrictions, student CRUD, course registration, lecturer grade entry, approval, backup and recovery.
 
 ```bash
 cd backend
@@ -88,16 +109,8 @@ npm install
 npm run build
 ```
 
-GitHub Actions runs both checks, using a PostgreSQL 17 service for backend integration tests.
+GitHub Actions runs both checks with PostgreSQL 17.
 
-## Backups and recovery
+## Backup and recovery limitation
 
-The application stores logical JSONB snapshots in the same Neon database. Restores validate the snapshot, remap student IDs so foreign-key relationships remain correct, and create a pre-restore safety snapshot in the same transaction.
-
-**Important limitation:** these in-database snapshots are for application-level recovery demonstrations, not independent disaster recovery. They do not protect against loss or deletion of the entire Neon project. Configure Neon-managed backups/restore or export snapshots to independent storage before using real institutional data.
-
-## Deployment
-
-The API and frontend are deployed as separate Render services. The API requires `DATABASE_URL` and `CAMPUSBOOK_CORS_ORIGINS`. The frontend requires `VITE_API_URL` at build time. Both services can use Render's free plan; free API services may sleep after inactivity.
-
-Do not use real student personal data in this public academic demonstration project.
+JSONB snapshots are stored in the same Neon database. They support the assignment's application-level backup/recovery demonstration, but they are not independent disaster recovery. Do not use real student records in this public academic demonstration project. Use an independent database backup/export before handling institutional data.
