@@ -15,6 +15,7 @@ def clean_database(monkeypatch):
     if not os.getenv("DATABASE_URL"):
         pytest.skip("DATABASE_URL is required for PostgreSQL integration tests.")
     monkeypatch.setenv("CAMPUSBOOK_BOOTSTRAP_SECRET", "test-only-bootstrap-secret")
+    monkeypatch.setenv("CAMPUSBOOK_TESTING", "1")
     main.initialize_database()
     client.cookies.clear()
     with main.connect() as db:
