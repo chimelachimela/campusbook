@@ -38,7 +38,7 @@ async function requestWithRetry<T>(path:string,attempts=8):Promise<T>{
     try{return await request<T>(path);}
     catch(error){
       lastError=error;
-      const transient=(error instanceof ApiError&&[502,503,504].includes(error.status))||error instanceof TypeError;
+      const transient=(error instanceof ApiError&&[500,502,503,504].includes(error.status))||error instanceof TypeError;
       if(!transient||attempt===attempts-1)throw error;
       await wait(Math.min(2000*(2**attempt),12000));
     }
