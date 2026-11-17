@@ -114,3 +114,19 @@ td{color:#35435a;font-size:12px}
 .department-row-title small{font-size:11px;color:#64748b}
 @media(max-width:850px){.portal-course-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:600px){.portal-content{padding:24px 14px 42px}.portal-heading h1{font-size:25px}.portal-course-grid{grid-template-columns:1fr}.portal-section-heading{align-items:flex-start;flex-direction:column}.portal-header{padding:0 14px}.portal-user{gap:8px}.portal-user>span{display:none}.portal-import{flex-wrap:wrap}.portal-actions{flex-direction:column}.portal-actions button{width:100%;justify-content:center}.auth-card{padding:24px}}
+
+
+.setup-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.setup-card{padding:22px}
+.setup-card h2{font-size:17px;color:#1b2940;margin:0 0 6px}
+.setup-card>p{font-size:12px;color:#5b6b82;line-height:1.5;margin:0 0 18px}
+.setup-card form{display:grid;gap:12px}
+.setup-card label{display:grid;gap:6px;font-size:12px;font-weight:650;color:#34445d}
+.setup-card input,.setup-card select{width:100%;min-height:40px;padding:8px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#1b2940;font:inherit;font-weight:450}
+.setup-two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.setup-check{display:flex!important;align-items:center;gap:8px}
+.setup-check input{width:16px;min-height:16px}
+.setup-card .primary-button{justify-content:center;min-height:40px}
+.setup-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:16px;padding-top:12px;border-top:1px solid #edf1f6}
+.setup-list span{padding:5px 8px;background:#f2f5f9;border-radius:6px;color:#56657b;font-size:10px}
+@media(max-width:800px){.setup-grid{grid-template-columns:1fr}}
