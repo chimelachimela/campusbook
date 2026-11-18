@@ -71,6 +71,10 @@ class SignupInput(BaseModel):
     identity_number: str = Field(min_length=2,max_length=40)
 
 
+class DemoLoginInput(BaseModel):
+    role: str = Field(pattern="^(Student|Lecturer)$")
+
+
 class BulkCourseRegistrationInput(BaseModel):
     course_offering_ids: list[int] = Field(min_length=1,max_length=100)
 
@@ -177,7 +181,7 @@ def connect_primary():
 
 @contextmanager
 def connect():
-    """Use the isolated demo clone only for requests authenticated as demo.admin."""
+    """Use the isolated demo clone for authenticated demo administrator, student and lecturer sessions."""
     primary_url = os.getenv("DATABASE_URL", DATABASE_URL)
     demo_url = os.getenv("CAMPUSBOOK_DEMO_DATABASE_URL", "")
     url = demo_url if _DEMO_DATABASE_ACTIVE.get() and demo_url else primary_url
@@ -671,11 +675,11 @@ def signup(payload:SignupInput,response:Response):
     identity=payload.identity_number.strip()
     with connect() as db:
         if payload.role=="Student":
-            record=db.execute("SELECT id FROM students WHERE UPPER(matric_number)=UPPER(%s) AND status='Active'",(identity,)).fetchone()
+            record=db.execute("SELECT id FROM students WHERE regexp_replace(UPPER(matric_number),'[^A-Z0-9]','','g')=regexp_replace(UPPER(%s),'[^A-Z0-9]','','g') AND status='Active'",(identity,)).fetchone()
             if not record: raise HTTPException(status_code=404,detail="No active student record matches that matriculation number. Ask the administrator to create your student record first.")
             student_id=record["id"]; lecturer_id=None
         else:
-            record=db.execute("SELECT id FROM lecturers WHERE UPPER(staff_number)=UPPER(%s) AND status='Active'",(identity,)).fetchone()
+            record=db.execute("SELECT id FROM lecturers WHERE regexp_replace(UPPER(staff_number),'[^A-Z0-9]','','g')=regexp_replace(UPPER(%s),'[^A-Z0-9]','','g') AND status='Active'",(identity,)).fetchone()
             if not record: raise HTTPException(status_code=404,detail="No active lecturer record matches that staff number. Ask the administrator to create your lecturer profile and assign your department first.")
             lecturer_id=record["id"]; student_id=None
         try:
@@ -690,33 +694,37 @@ def signup(payload:SignupInput,response:Response):
     return account
 
 
-@app.post("/api/auth/demo-admin")
-def demo_admin_login(response:Response):
-    """Issue one session on the primary DB and its isolated demo clone."""
+def _issue_demo_session(username:str,role:str,response:Response):
     demo_url=os.getenv("CAMPUSBOOK_DEMO_DATABASE_URL","")
     if os.getenv("CAMPUSBOOK_DEMO_ADMIN_ENABLED","").lower()!="true" or not demo_url:
-        raise HTTPException(status_code=404,detail="Administrator demo access is not configured.")
-    token=secrets.token_urlsafe(48)
-    now=datetime.now(timezone.utc)
-    token_hash=_session_digest(token)
+        raise HTTPException(status_code=404,detail="Demo access is not configured.")
+    token=secrets.token_urlsafe(48);now=datetime.now(timezone.utc);token_hash=_session_digest(token)
     with connect_primary() as primary:
-        user=primary.execute("SELECT id,username,role,student_id,lecturer_id FROM user_accounts WHERE username='demo.admin' AND role='Administrator' AND is_active=TRUE").fetchone()
-        if not user:
-            raise HTTPException(status_code=503,detail="The administrator demo account is not configured.")
+        user=primary.execute("SELECT id,username,role,student_id,lecturer_id,department_id FROM user_accounts WHERE username=%s AND role=%s AND is_active=TRUE",(username,role)).fetchone()
+        if not user:raise HTTPException(status_code=503,detail="The requested demo account is not configured.")
         primary.execute("INSERT INTO user_sessions (user_id,token_hash,created_at,expires_at) VALUES (%s,%s,%s,%s)",(user["id"],token_hash,now,now+timedelta(hours=SESSION_HOURS)))
-        primary.execute("INSERT INTO demo_change_requests (method,path,payload,status,created_at) VALUES ('SESSION','/api/auth/demo-admin','{}'::jsonb,'Session opened',%s)",(now,))
     if demo_url != os.getenv("DATABASE_URL",DATABASE_URL):
         with psycopg.connect(demo_url,row_factory=dict_row) as demo:
-            demo_user=demo.execute("SELECT id FROM user_accounts WHERE username='demo.admin' AND role='Administrator' AND is_active=TRUE").fetchone()
-            if not demo_user:
-                raise HTTPException(status_code=503,detail="The isolated demo administrator account is missing.")
+            demo_user=demo.execute("SELECT id FROM user_accounts WHERE username=%s AND role=%s AND is_active=TRUE",(username,role)).fetchone()
+            if not demo_user:raise HTTPException(status_code=503,detail="The matching account is missing from the isolated demo copy.")
             demo.execute("INSERT INTO user_sessions (user_id,token_hash,created_at,expires_at) VALUES (%s,%s,%s,%s)",(demo_user["id"],token_hash,now,now+timedelta(hours=SESSION_HOURS)))
     response.set_cookie("campusbook_session",token,httponly=True,secure=not bool(os.getenv("CAMPUSBOOK_TESTING")),samesite=os.getenv("CAMPUSBOOK_COOKIE_SAMESITE","lax").lower(),max_age=SESSION_HOURS*3600,path="/")
-    return user
+    return {k:user[k] for k in ("id","username","role","student_id","lecturer_id")}
+
+
+@app.post("/api/auth/demo-admin")
+def demo_admin_login(response:Response):
+    return _issue_demo_session("demo.admin","Administrator",response)
+
+
+@app.post("/api/auth/demo-login")
+def demo_role_login(payload:DemoLoginInput,response:Response):
+    username="demo.student" if payload.role=="Student" else "demo.lecturer"
+    return _issue_demo_session(username,payload.role,response)
 
 
 @app.middleware("http")
-async def protect_demo_administrator(request:Request,call_next):
+async def isolate_demo_accounts(request:Request,call_next):
     token=request.cookies.get("campusbook_session")
     is_demo=False
     if token and request.url.path!="/api/auth/demo-admin":
@@ -725,7 +733,7 @@ async def protect_demo_administrator(request:Request,call_next):
                 is_demo=bool(primary.execute(
                     """SELECT 1 FROM user_sessions s JOIN user_accounts u ON u.id=s.user_id
                     WHERE s.token_hash=%s AND s.revoked_at IS NULL AND s.expires_at>%s
-                    AND u.username='demo.admin' AND u.is_active=TRUE""",
+                    AND u.username IN ('demo.admin','demo.student','demo.lecturer') AND u.is_active=TRUE""",
                     (_session_digest(token),datetime.now(timezone.utc))
                 ).fetchone())
         except Exception:
@@ -738,34 +746,9 @@ async def protect_demo_administrator(request:Request,call_next):
         return JSONResponse(status_code=503,content={"detail":"The isolated demo workspace is not configured."})
     marker=_DEMO_DATABASE_ACTIVE.set(True)
     try:
-        raw_body=await request.body()
-        async def receive():
-            return {"type":"http.request","body":raw_body,"more_body":False}
-        request._receive=receive
-        try:
-            payload=json.loads(raw_body.decode("utf-8")) if raw_body else {}
-        except Exception:
-            payload={}
-        if not isinstance(payload,dict): payload={}
-        if request.method=="DELETE" and re.fullmatch(r"/api/students/\d+",request.url.path):
-            student_id=int(request.url.path.rsplit("/",1)[1])
-            with connect() as demo_db:
-                deleted_student=demo_db.execute("SELECT matric_number,first_name,last_name,department,level,status FROM students WHERE id=%s",(student_id,)).fetchone()
-            if deleted_student: payload={"_deleted_student":dict(deleted_student)}
         response=await call_next(request)
-        reviewable=(
-            (request.method,request.url.path) in {("POST","/api/faculties"),("POST","/api/departments"),("POST","/api/students"),("POST","/api/admin/lecturers"),("POST","/api/admin/courses"),("POST","/api/admin/course-offerings"),("POST","/api/admin/academic-sessions")}
-            or (request.method=="PUT" and re.fullmatch(r"/api/students/\d+",request.url.path))
-            or (request.method=="DELETE" and re.fullmatch(r"/api/students/\d+",request.url.path))
-            or (request.method=="PATCH" and re.fullmatch(r"/api/admin/course-offerings/\d+/lecturer",request.url.path))
-        )
-        if reviewable and response.status_code<400:
-            payload={k:("[REDACTED]" if any(secret in k.lower() for secret in ("password","token","secret")) else v) for k,v in payload.items()}
-            with connect_primary() as primary:
-                primary.execute(
-                    "INSERT INTO demo_change_requests (method,path,payload,status,created_at) VALUES (%s,%s,%s,'Pending',%s)",
-                    (request.method,request.url.path,Jsonb(payload),datetime.now(timezone.utc))
-                )
+        # Demo users operate only on CAMPUSBOOK_DEMO_DATABASE_URL. Their writes are
+        # deliberately not copied to the institution database or an approval queue.
         return response
     finally:
         _DEMO_DATABASE_ACTIVE.reset(marker)
@@ -1023,7 +1006,7 @@ def lecturer_roster(offering_id:int,user:dict[str,Any]=Depends(get_current_user)
 
 @app.put("/api/lecturer/offerings/{offering_id}/grades")
 def save_grade_roster(offering_id:int,payload:GradeRosterInput,user:dict[str,Any]=Depends(get_current_user)):
-    require_roles(user,"Lecturer")
+    require_roles(user,"Administrator")
     ids=[g.student_id for g in payload.grades]
     if len(ids)!=len(set(ids)): raise HTTPException(status_code=422,detail="Uploaded roster contains duplicate students.")
     with connect() as db:
@@ -1046,7 +1029,7 @@ def save_grade_roster(offering_id:int,payload:GradeRosterInput,user:dict[str,Any
 
 @app.post("/api/lecturer/offerings/{offering_id}/submit")
 def submit_grade_roster(offering_id:int,user:dict[str,Any]=Depends(get_current_user)):
-    require_roles(user,"Lecturer")
+    require_roles(user,"Administrator")
     with connect() as db:
         assigned=db.execute("SELECT id FROM course_offerings WHERE id=%s AND lecturer_id=%s",(offering_id,user["lecturer_id"])).fetchone()
         if not assigned: raise HTTPException(status_code=404,detail="Assigned course offering not found.")
@@ -1076,7 +1059,9 @@ def student_results(user:dict[str,Any]=Depends(get_current_user)):
     require_roles(user,"Student")
     with connect() as db:
         return db.execute(
-            """SELECT c.course_code,c.title AS course_title,g.score,g.letter_grade,g.status,
+            """SELECT c.course_code,c.title AS course_title,c.credit_units,g.score,
+            CASE WHEN g.score>=70 THEN 'A' WHEN g.score>=60 THEN 'B' WHEN g.score>=50 THEN 'C'
+                 WHEN g.score>=45 THEN 'D' WHEN g.score>=40 THEN 'E' ELSE 'F' END AS letter_grade,g.status,
             s.name AS semester,a.name AS academic_session FROM course_grades g
             JOIN course_registrations cr ON cr.id=g.registration_id JOIN course_offerings o ON o.id=cr.course_offering_id
             JOIN courses c ON c.id=o.course_id JOIN semesters s ON s.id=o.semester_id
@@ -1197,41 +1182,119 @@ def exams_officer_ready_results(user:dict[str,Any]=Depends(get_current_user)):
     require_roles(user,"ExamsOfficer")
     with connect() as db:
         return db.execute(
-            """SELECT s.id AS semester_id,s.name AS semester,a.name AS academic_session,
-            c.level,COUNT(DISTINCT g.id)::int AS submitted_grades,
-            COUNT(DISTINCT c.id)::int AS courses
-            FROM course_grades g
-            JOIN course_registrations cr ON cr.id=g.registration_id
-            JOIN course_offerings o ON o.id=cr.course_offering_id
-            JOIN courses c ON c.id=o.course_id
-            JOIN semesters s ON s.id=o.semester_id
-            JOIN academic_sessions a ON a.id=s.academic_session_id
-            WHERE c.department_id=%s AND g.status='Submitted'
-            GROUP BY s.id,s.name,a.name,c.level
+            """SELECT s.id AS semester_id,s.name AS semester,a.name AS academic_session,c.level,
+            COUNT(DISTINCT o.id)::int AS courses,
+            COUNT(DISTINCT cr.student_id)::int AS students,
+            COUNT(DISTINCT g.id) FILTER (WHERE g.status='Draft')::int AS entered_scores,
+            x.status AS submission_status
+            FROM course_offerings o JOIN courses c ON c.id=o.course_id
+            JOIN semesters s ON s.id=o.semester_id JOIN academic_sessions a ON a.id=s.academic_session_id
+            LEFT JOIN course_registrations cr ON cr.course_offering_id=o.id AND cr.status='Registered'
+            LEFT JOIN course_grades g ON g.registration_id=cr.id
+            LEFT JOIN department_result_submissions x ON x.department_id=c.department_id AND x.semester_id=s.id AND x.level=c.level
+            WHERE c.department_id=%s AND o.status IN ('Open','Closed','Completed')
+            GROUP BY s.id,s.name,a.name,c.level,x.status
             ORDER BY a.name DESC,s.name,c.level""",(user["department_id"],)
         ).fetchall()
+
+
+@app.get("/api/exams-officer/gradebook")
+def exams_officer_gradebook(semester_id:int=Query(gt=0),level:str=Query(pattern="^(100|200|300|400|500|600)$"),user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"ExamsOfficer")
+    with connect() as db:
+        department=db.execute("SELECT id,name FROM departments WHERE id=%s",(user["department_id"],)).fetchone()
+        semester=db.execute("SELECT s.id,s.name,a.name AS academic_session FROM semesters s JOIN academic_sessions a ON a.id=s.academic_session_id WHERE s.id=%s",(semester_id,)).fetchone()
+        if not department or not semester:raise HTTPException(status_code=404,detail="Department or semester not found.")
+        students=db.execute(
+            """SELECT id AS student_id,matric_number,first_name,last_name,level
+            FROM students WHERE department_id=%s AND level=%s AND status='Active' ORDER BY matric_number""",
+            (user["department_id"],level)
+        ).fetchall()
+        offerings=db.execute(
+            """SELECT o.id AS offering_id,c.course_code,c.title AS course_title,c.credit_units,c.level,
+            o.section,l.first_name AS lecturer_first_name,l.last_name AS lecturer_last_name
+            FROM course_offerings o JOIN courses c ON c.id=o.course_id
+            LEFT JOIN lecturers l ON l.id=o.lecturer_id
+            WHERE c.department_id=%s AND c.level=%s AND o.semester_id=%s
+            AND o.status IN ('Open','Closed','Completed') ORDER BY c.course_code,o.section""",
+            (user["department_id"],level,semester_id)
+        ).fetchall()
+        courses=[]
+        for offering in offerings:
+            roster=db.execute(
+                """SELECT st.id AS student_id,st.matric_number,st.first_name,st.last_name,
+                cr.id AS registration_id,cr.status AS registration_status,g.score,g.status AS grade_status
+                FROM students st LEFT JOIN course_registrations cr
+                  ON cr.student_id=st.id AND cr.course_offering_id=%s AND cr.status='Registered'
+                LEFT JOIN course_grades g ON g.registration_id=cr.id
+                WHERE st.department_id=%s AND st.level=%s AND st.status='Active'
+                ORDER BY st.matric_number""",
+                (offering["offering_id"],user["department_id"],level)
+            ).fetchall()
+            courses.append({**offering,"roster":roster})
+        submission=db.execute("SELECT id,status FROM department_result_submissions WHERE department_id=%s AND semester_id=%s AND level=%s",(user["department_id"],semester_id,level)).fetchone()
+    return {"department":department["name"],"semester_id":semester_id,"semester":semester["name"],"academic_session":semester["academic_session"],"level":level,"students":students,"courses":courses,"submission":submission}
+
+
+@app.put("/api/exams-officer/offerings/{offering_id}/grades")
+def save_officer_grade_roster(offering_id:int,payload:GradeRosterInput,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"ExamsOfficer")
+    ids=[g.student_id for g in payload.grades]
+    if len(ids)!=len(set(ids)):raise HTTPException(status_code=422,detail="The grade sheet contains duplicate students.")
+    with connect() as db:
+        offering=db.execute(
+            """SELECT o.id,o.semester_id,c.level,c.department_id FROM course_offerings o
+            JOIN courses c ON c.id=o.course_id WHERE o.id=%s AND c.department_id=%s""",
+            (offering_id,user["department_id"])
+        ).fetchone()
+        if not offering:raise HTTPException(status_code=404,detail="This course does not belong to your assigned department.")
+        submission=db.execute("SELECT status FROM department_result_submissions WHERE department_id=%s AND semester_id=%s AND level=%s",(user["department_id"],offering["semester_id"],offering["level"])).fetchone()
+        if submission and submission["status"] in ("Submitted","Approved"):raise HTTPException(status_code=409,detail="This departmental result package is locked. Ask the administrator to reject it before making corrections.")
+        registrations=db.execute(
+            """SELECT id,student_id FROM course_registrations
+            WHERE course_offering_id=%s AND status='Registered' AND student_id=ANY(%s)""",
+            (offering_id,ids)
+        ).fetchall()
+        mapping={r["student_id"]:r["id"] for r in registrations}
+        if len(mapping)!=len(ids):raise HTTPException(status_code=422,detail="A score was entered for a student who is not registered for this course.")
+        for grade in payload.grades:
+            registration_id=mapping[grade.student_id]
+            existing=db.execute("SELECT status FROM course_grades WHERE registration_id=%s",(registration_id,)).fetchone()
+            if existing and existing["status"] in ("Submitted","Approved","Published"):raise HTTPException(status_code=409,detail="A submitted or published grade cannot be edited.")
+            db.execute(
+                """INSERT INTO course_grades (registration_id,score,letter_grade,status,entered_by,updated_at)
+                VALUES (%s,%s,CASE WHEN %s>=70 THEN 'A' WHEN %s>=60 THEN 'B' WHEN %s>=50 THEN 'C'
+                WHEN %s>=45 THEN 'D' WHEN %s>=40 THEN 'E' ELSE 'F' END,'Draft',%s,NOW())
+                ON CONFLICT (registration_id) DO UPDATE SET score=EXCLUDED.score,letter_grade=EXCLUDED.letter_grade,
+                status='Draft',entered_by=EXCLUDED.entered_by,updated_at=NOW()""",
+                (registration_id,grade.score,grade.score,grade.score,grade.score,grade.score,grade.score,user["id"])
+            )
+        log_action(db,"Examination officer saved course grade sheet",f"Department {user['department_id']}; offering {offering_id}; {len(ids)} scores")
+    return {"saved":len(ids),"status":"Draft"}
 
 
 @app.post("/api/exams-officer/submissions",status_code=201)
 def submit_department_results(payload:DepartmentSubmissionInput,user:dict[str,Any]=Depends(get_current_user)):
     require_roles(user,"ExamsOfficer")
     with connect() as db:
+        expected=db.execute(
+            """SELECT COUNT(*)::int AS total FROM course_registrations cr
+            JOIN course_offerings o ON o.id=cr.course_offering_id JOIN courses c ON c.id=o.course_id
+            WHERE c.department_id=%s AND o.semester_id=%s AND c.level=%s
+            AND o.status IN ('Open','Closed','Completed') AND cr.status='Registered'""",
+            (user["department_id"],payload.semester_id,payload.level)
+        ).fetchone()["total"]
         grades=db.execute(
-            """SELECT g.id FROM course_grades g
-            JOIN course_registrations cr ON cr.id=g.registration_id
-            JOIN course_offerings o ON o.id=cr.course_offering_id
-            JOIN courses c ON c.id=o.course_id
-            WHERE c.department_id=%s AND o.semester_id=%s AND c.level=%s AND g.status='Submitted'
+            """SELECT g.id FROM course_grades g JOIN course_registrations cr ON cr.id=g.registration_id
+            JOIN course_offerings o ON o.id=cr.course_offering_id JOIN courses c ON c.id=o.course_id
+            WHERE c.department_id=%s AND o.semester_id=%s AND c.level=%s
+            AND o.status IN ('Open','Closed','Completed') AND cr.status='Registered' AND g.status='Draft'
             ORDER BY g.id""",(user["department_id"],payload.semester_id,payload.level)
         ).fetchall()
-        if not grades:
-            raise HTTPException(status_code=409,detail="There are no lecturer-submitted grades ready for this department, semester and level.")
-        existing=db.execute(
-            "SELECT id,status FROM department_result_submissions WHERE department_id=%s AND semester_id=%s AND level=%s",
-            (user["department_id"],payload.semester_id,payload.level)
-        ).fetchone()
-        if existing and existing["status"]!="Rejected":
-            raise HTTPException(status_code=409,detail="A departmental result submission already exists for this semester and level.")
+        if expected==0:raise HTTPException(status_code=409,detail="There are no registered course places for this department, semester and level.")
+        if len(grades)!=expected:raise HTTPException(status_code=409,detail=f"Complete every registered student score before submission. {len(grades)} of {expected} scores are entered.")
+        existing=db.execute("SELECT id,status FROM department_result_submissions WHERE department_id=%s AND semester_id=%s AND level=%s FOR UPDATE",(user["department_id"],payload.semester_id,payload.level)).fetchone()
+        if existing and existing["status"]!="Rejected":raise HTTPException(status_code=409,detail="A departmental result package already exists for this semester and level.")
         if existing:
             submission=db.execute(
                 """UPDATE department_result_submissions SET status='Submitted',submitted_by=%s,
@@ -1241,17 +1304,13 @@ def submit_department_results(payload:DepartmentSubmissionInput,user:dict[str,An
             db.execute("DELETE FROM department_result_submission_grades WHERE submission_id=%s",(submission["id"],))
         else:
             submission=db.execute(
-                """INSERT INTO department_result_submissions
-                (department_id,semester_id,level,submitted_by)
-                VALUES (%s,%s,%s,%s) RETURNING id""",
-                (user["department_id"],payload.semester_id,payload.level,user["id"])
+                """INSERT INTO department_result_submissions (department_id,semester_id,level,submitted_by)
+                VALUES (%s,%s,%s,%s) RETURNING id""",(user["department_id"],payload.semester_id,payload.level,user["id"])
             ).fetchone()
+        db.execute("UPDATE course_grades SET status='Submitted',submitted_at=NOW(),updated_at=NOW() WHERE id=ANY(%s)",([g["id"] for g in grades],))
         with db.cursor() as cursor:
-            cursor.executemany(
-                "INSERT INTO department_result_submission_grades (submission_id,grade_id) VALUES (%s,%s)",
-                [(submission["id"],g["id"]) for g in grades]
-            )
-        log_action(db,"Departmental results submitted",f"Department {user['department_id']}; semester {payload.semester_id}; level {payload.level}")
+            cursor.executemany("INSERT INTO department_result_submission_grades (submission_id,grade_id) VALUES (%s,%s)",[(submission["id"],g["id"]) for g in grades])
+        log_action(db,"Departmental results submitted",f"Department {user['department_id']}; semester {payload.semester_id}; level {payload.level}; {len(grades)} scores")
     return {"submission_id":submission["id"],"grades_submitted":len(grades),"status":"Submitted"}
 
 
