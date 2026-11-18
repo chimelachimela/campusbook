@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ MIGRATION_FILE = BASE_DIR / "migrations" / "001_initial_postgres.sql"
 BACKUP_VERSION = 3
 PASSWORD_HASHER = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2)
 SESSION_HOURS = 12
+_DEMO_DATABASE_ACTIVE: ContextVar[bool] = ContextVar('campusbook_demo_database_active', default=False)
 
 app = FastAPI(
     title="CampusBook API",
@@ -164,9 +166,21 @@ class ResultInput(BaseModel):
 
 
 @contextmanager
-def connect():
-    """Open a short-lived PostgreSQL connection and manage its transaction."""
+def connect_primary():
+    """Always connect to the institution's primary database."""
     url = os.getenv("DATABASE_URL", DATABASE_URL)
+    if not url:
+        raise RuntimeError("DATABASE_URL is not configured.")
+    with psycopg.connect(url, row_factory=dict_row) as db:
+        yield db
+
+
+@contextmanager
+def connect():
+    """Use the isolated demo clone only for requests authenticated as demo.admin."""
+    primary_url = os.getenv("DATABASE_URL", DATABASE_URL)
+    demo_url = os.getenv("CAMPUSBOOK_DEMO_DATABASE_URL", "")
+    url = demo_url if _DEMO_DATABASE_ACTIVE.get() and demo_url else primary_url
     if not url:
         raise RuntimeError("DATABASE_URL is not configured.")
     with psycopg.connect(url, row_factory=dict_row) as db:
@@ -678,50 +692,104 @@ def signup(payload:SignupInput,response:Response):
 
 @app.post("/api/auth/demo-admin")
 def demo_admin_login(response:Response):
-    """Issue a read-only public demo session for the administrator workspace."""
-    if os.getenv("CAMPUSBOOK_DEMO_ADMIN_ENABLED","").lower()!="true":
-        raise HTTPException(status_code=404,detail="Administrator demo access is disabled.")
-    with connect() as db:
-        user=db.execute("SELECT id,username,role,student_id,lecturer_id FROM user_accounts WHERE username='demo.admin' AND role='Administrator' AND is_active=TRUE").fetchone()
+    """Issue one session on the primary DB and its isolated demo clone."""
+    demo_url=os.getenv("CAMPUSBOOK_DEMO_DATABASE_URL","")
+    if os.getenv("CAMPUSBOOK_DEMO_ADMIN_ENABLED","").lower()!="true" or not demo_url:
+        raise HTTPException(status_code=404,detail="Administrator demo access is not configured.")
+    token=secrets.token_urlsafe(48)
+    now=datetime.now(timezone.utc)
+    token_hash=_session_digest(token)
+    with connect_primary() as primary:
+        user=primary.execute("SELECT id,username,role,student_id,lecturer_id FROM user_accounts WHERE username='demo.admin' AND role='Administrator' AND is_active=TRUE").fetchone()
         if not user:
             raise HTTPException(status_code=503,detail="The administrator demo account is not configured.")
-        _issue_session(db,user["id"],response)
-        log_action(db,"Demo administrator signed in","Read-only demonstration session")
+        primary.execute("INSERT INTO user_sessions (user_id,token_hash,created_at,expires_at) VALUES (%s,%s,%s,%s)",(user["id"],token_hash,now,now+timedelta(hours=SESSION_HOURS)))
+        primary.execute("INSERT INTO demo_change_requests (method,path,payload,status,created_at) VALUES ('SESSION','/api/auth/demo-admin','{}'::jsonb,'Session opened',%s)",(now,))
+    with psycopg.connect(demo_url,row_factory=dict_row) as demo:
+        demo_user=demo.execute("SELECT id FROM user_accounts WHERE username='demo.admin' AND role='Administrator' AND is_active=TRUE").fetchone()
+        if not demo_user:
+            raise HTTPException(status_code=503,detail="The isolated demo administrator account is missing.")
+        demo.execute("INSERT INTO user_sessions (user_id,token_hash,created_at,expires_at) VALUES (%s,%s,%s,%s)",(demo_user["id"],token_hash,now,now+timedelta(hours=SESSION_HOURS)))
+    response.set_cookie("campusbook_session",token,httponly=True,secure=not bool(os.getenv("CAMPUSBOOK_TESTING")),samesite=os.getenv("CAMPUSBOOK_COOKIE_SAMESITE","lax").lower(),max_age=SESSION_HOURS*3600,path="/")
     return user
 
 
 @app.middleware("http")
 async def protect_demo_administrator(request:Request,call_next):
-    # The public demo administrator can inspect the existing admin workspace,
-    # but cannot mutate the real shared academic database.
-    if request.method in {"POST","PUT","PATCH","DELETE"} and request.url.path not in {
-        "/api/auth/login","/api/auth/logout","/api/auth/demo-admin"
-    }:
-        token=request.cookies.get("campusbook_session")
-        if token:
+    token=request.cookies.get("campusbook_session")
+    is_demo=False
+    if token and request.url.path!="/api/auth/demo-admin":
+        try:
+            with connect_primary() as primary:
+                is_demo=bool(primary.execute(
+                    """SELECT 1 FROM user_sessions s JOIN user_accounts u ON u.id=s.user_id
+                    WHERE s.token_hash=%s AND s.revoked_at IS NULL AND s.expires_at>%s
+                    AND u.username='demo.admin' AND u.is_active=TRUE""",
+                    (_session_digest(token),datetime.now(timezone.utc))
+                ).fetchone())
+        except Exception:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=503,content={"detail":"Could not verify the demo session. Please retry."})
+    if not is_demo:
+        return await call_next(request)
+    if not os.getenv("CAMPUSBOOK_DEMO_DATABASE_URL"):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=503,content={"detail":"The isolated demo workspace is not configured."})
+    marker=_DEMO_DATABASE_ACTIVE.set(True)
+    try:
+        raw_body=await request.body()
+        async def receive():
+            return {"type":"http.request","body":raw_body,"more_body":False}
+        request._receive=receive
+        response=await call_next(request)
+        if request.method in {"POST","PUT","PATCH","DELETE"} and response.status_code<400 and request.url.path not in {"/api/auth/logout"}:
             try:
-                with connect() as db:
-                    demo=db.execute(
-                        """SELECT 1 FROM user_sessions s JOIN user_accounts u ON u.id=s.user_id
-                        WHERE s.token_hash=%s AND s.revoked_at IS NULL AND s.expires_at>%s
-                        AND u.username='demo.admin' AND u.is_active=TRUE""",
-                        (_session_digest(token),datetime.now(timezone.utc))
-                    ).fetchone()
-                if demo:
-                    from fastapi.responses import JSONResponse
-                    return JSONResponse(status_code=403,content={"detail":"The public administrator demo is read-only. Sign in with an institution administrator account to make changes."})
+                payload=json.loads(raw_body.decode("utf-8")) if raw_body else {}
             except Exception:
-                # Fail closed for demo-admin writes if the identity check cannot be completed.
-                from fastapi.responses import JSONResponse
-                return JSONResponse(status_code=503,content={"detail":"Could not verify demo administrator permissions. Please retry."})
-    return await call_next(request)
+                payload={"note":"Non-JSON request body"}
+            if isinstance(payload,dict):
+                payload={k:("[REDACTED]" if any(secret in k.lower() for secret in ("password","token","secret")) else v) for k,v in payload.items()}
+            with connect_primary() as primary:
+                primary.execute(
+                    "INSERT INTO demo_change_requests (method,path,payload,status,created_at) VALUES (%s,%s,%s,'Pending',%s)",
+                    (request.method,request.url.path,Jsonb(payload),datetime.now(timezone.utc))
+                )
+        return response
+    finally:
+        _DEMO_DATABASE_ACTIVE.reset(marker)
 
+
+
+@app.get("/api/admin/demo-change-requests")
+def list_demo_change_requests(user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    if user.get("username")=="demo.admin": raise HTTPException(status_code=403,detail="The demo workspace cannot review its own change requests.")
+    with connect_primary() as db:
+        return db.execute("SELECT id,method,path,payload,status,created_at,reviewed_at,review_note FROM demo_change_requests WHERE status IN ('Pending','Approved','Rejected') ORDER BY created_at DESC LIMIT 200").fetchall()
+
+
+class DemoChangeReviewInput(BaseModel):
+    decision:str=Field(pattern="^(Approved|Rejected)$")
+    note:str=Field(default="",max_length=500)
+
+
+@app.post("/api/admin/demo-change-requests/{request_id}/review")
+def review_demo_change_request(request_id:int,payload:DemoChangeReviewInput,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    if user.get("username")=="demo.admin": raise HTTPException(status_code=403,detail="The demo workspace cannot review its own change requests.")
+    with connect_primary() as db:
+        row=db.execute("UPDATE demo_change_requests SET status=%s,reviewed_at=%s,reviewed_by=%s,review_note=%s WHERE id=%s AND status='Pending' RETURNING id,status,reviewed_at,review_note",(payload.decision,datetime.now(timezone.utc),user["id"],payload.note.strip(),request_id)).fetchone()
+        if not row: raise HTTPException(status_code=404,detail="Pending demo change request not found.")
+        log_action(db,"Demo change "+payload.decision.lower(),f"Request #{request_id}: {payload.note.strip()}")
+    return row
 
 @app.post("/api/auth/logout")
 def logout(request:Request,response:Response):
     token=request.cookies.get("campusbook_session")
     if token:
         with connect() as db: db.execute("UPDATE user_sessions SET revoked_at=%s WHERE token_hash=%s AND revoked_at IS NULL",(datetime.now(timezone.utc),_session_digest(token)))
+        if _DEMO_DATABASE_ACTIVE.get():
+            with connect_primary() as primary: primary.execute("UPDATE user_sessions SET revoked_at=%s WHERE token_hash=%s AND revoked_at IS NULL",(datetime.now(timezone.utc),_session_digest(token)))
     response.delete_cookie("campusbook_session",path="/",secure=not bool(os.getenv("CAMPUSBOOK_TESTING")),httponly=True,samesite=os.getenv("CAMPUSBOOK_COOKIE_SAMESITE","lax").lower())
     return {"logged_out":True}
 
