@@ -1059,7 +1059,9 @@ def student_results(user:dict[str,Any]=Depends(get_current_user)):
     require_roles(user,"Student")
     with connect() as db:
         return db.execute(
-            """SELECT c.course_code,c.title AS course_title,c.credit_units,g.score,g.letter_grade,g.status,
+            """SELECT c.course_code,c.title AS course_title,c.credit_units,g.score,
+            CASE WHEN g.score>=70 THEN 'A' WHEN g.score>=60 THEN 'B' WHEN g.score>=50 THEN 'C'
+                 WHEN g.score>=45 THEN 'D' WHEN g.score>=40 THEN 'E' ELSE 'F' END AS letter_grade,g.status,
             s.name AS semester,a.name AS academic_session FROM course_grades g
             JOIN course_registrations cr ON cr.id=g.registration_id JOIN course_offerings o ON o.id=cr.course_offering_id
             JOIN courses c ON c.id=o.course_id JOIN semesters s ON s.id=o.semester_id
