@@ -1065,6 +1065,125 @@ def assign_offering_lecturer(offering_id:int,payload:LecturerAssignmentInput,use
     return row
 
 
+
+@app.get("/api/exams-officer/ready-results")
+def exams_officer_ready_results(user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"ExamsOfficer")
+    with connect() as db:
+        return db.execute(
+            """SELECT s.id AS semester_id,s.name AS semester,a.name AS academic_session,
+            c.level,COUNT(DISTINCT g.id)::int AS submitted_grades,
+            COUNT(DISTINCT c.id)::int AS courses
+            FROM course_grades g
+            JOIN course_registrations cr ON cr.id=g.registration_id
+            JOIN course_offerings o ON o.id=cr.course_offering_id
+            JOIN courses c ON c.id=o.course_id
+            JOIN semesters s ON s.id=o.semester_id
+            JOIN academic_sessions a ON a.id=s.academic_session_id
+            WHERE c.department_id=%s AND g.status='Submitted'
+            GROUP BY s.id,s.name,a.name,c.level
+            ORDER BY a.name DESC,s.name,c.level""",(user["department_id"],)
+        ).fetchall()
+
+
+@app.post("/api/exams-officer/submissions",status_code=201)
+def submit_department_results(payload:DepartmentSubmissionInput,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"ExamsOfficer")
+    with connect() as db:
+        grades=db.execute(
+            """SELECT g.id FROM course_grades g
+            JOIN course_registrations cr ON cr.id=g.registration_id
+            JOIN course_offerings o ON o.id=cr.course_offering_id
+            JOIN courses c ON c.id=o.course_id
+            WHERE c.department_id=%s AND o.semester_id=%s AND c.level=%s AND g.status='Submitted'
+            ORDER BY g.id""",(user["department_id"],payload.semester_id,payload.level)
+        ).fetchall()
+        if not grades:
+            raise HTTPException(status_code=409,detail="There are no lecturer-submitted grades ready for this department, semester and level.")
+        existing=db.execute(
+            "SELECT id,status FROM department_result_submissions WHERE department_id=%s AND semester_id=%s AND level=%s",
+            (user["department_id"],payload.semester_id,payload.level)
+        ).fetchone()
+        if existing and existing["status"]!="Rejected":
+            raise HTTPException(status_code=409,detail="A departmental result submission already exists for this semester and level.")
+        if existing:
+            submission=db.execute(
+                """UPDATE department_result_submissions SET status='Submitted',submitted_by=%s,
+                reviewed_by=NULL,reviewed_at=NULL,review_note=NULL,submitted_at=NOW()
+                WHERE id=%s RETURNING id""",(user["id"],existing["id"])
+            ).fetchone()
+            db.execute("DELETE FROM department_result_submission_grades WHERE submission_id=%s",(submission["id"],))
+        else:
+            submission=db.execute(
+                """INSERT INTO department_result_submissions
+                (department_id,semester_id,level,submitted_by)
+                VALUES (%s,%s,%s,%s) RETURNING id""",
+                (user["department_id"],payload.semester_id,payload.level,user["id"])
+            ).fetchone()
+        db.executemany(
+            "INSERT INTO department_result_submission_grades (submission_id,grade_id) VALUES (%s,%s)",
+            [(submission["id"],g["id"]) for g in grades]
+        )
+        log_action(db,"Departmental results submitted",f"Department {user['department_id']}; semester {payload.semester_id}; level {payload.level}")
+    return {"submission_id":submission["id"],"grades_submitted":len(grades),"status":"Submitted"}
+
+
+@app.get("/api/admin/department-submissions")
+def list_department_submissions(user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        return db.execute(
+            """SELECT x.id AS submission_id,f.name AS faculty_name,d.name AS department_name,
+            s.name AS semester,a.name AS academic_session,x.level,x.status,x.submitted_at,
+            COUNT(DISTINCT sg.grade_id)::int AS grades_count,
+            COUNT(DISTINCT cr.student_id)::int AS students_count,
+            COUNT(DISTINCT o.id)::int AS courses_count
+            FROM department_result_submissions x
+            JOIN departments d ON d.id=x.department_id JOIN faculties f ON f.id=d.faculty_id
+            JOIN semesters s ON s.id=x.semester_id JOIN academic_sessions a ON a.id=s.academic_session_id
+            LEFT JOIN department_result_submission_grades sg ON sg.submission_id=x.id
+            LEFT JOIN course_grades g ON g.id=sg.grade_id
+            LEFT JOIN course_registrations cr ON cr.id=g.registration_id
+            LEFT JOIN course_offerings o ON o.id=cr.course_offering_id
+            GROUP BY x.id,f.name,d.name,s.name,a.name
+            ORDER BY f.name,d.name,x.level,a.name DESC,s.name"""
+        ).fetchall()
+
+
+@app.post("/api/admin/department-submissions/{submission_id}/approve")
+def approve_department_submission(submission_id:int,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        submission=db.execute("SELECT id,status FROM department_result_submissions WHERE id=%s FOR UPDATE",(submission_id,)).fetchone()
+        if not submission:raise HTTPException(status_code=404,detail="Departmental submission not found.")
+        if submission["status"]!="Submitted":raise HTTPException(status_code=409,detail="Only submitted departmental results can be approved.")
+        changed=db.execute(
+            """UPDATE course_grades SET status='Published',approved_at=NOW(),updated_at=NOW()
+            WHERE id IN (SELECT grade_id FROM department_result_submission_grades WHERE submission_id=%s)
+            AND status='Submitted'""",(submission_id,)
+        ).rowcount
+        db.execute("UPDATE department_result_submissions SET status='Approved',reviewed_by=%s,reviewed_at=NOW() WHERE id=%s",(user["id"],submission_id))
+        log_action(db,"Departmental results approved",f"Submission {submission_id}; {changed} grades published")
+    return {"approved":True,"grades_published":changed}
+
+
+@app.post("/api/admin/department-submissions/{submission_id}/reject")
+def reject_department_submission(submission_id:int,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        submission=db.execute("SELECT id,status FROM department_result_submissions WHERE id=%s FOR UPDATE",(submission_id,)).fetchone()
+        if not submission:raise HTTPException(status_code=404,detail="Departmental submission not found.")
+        if submission["status"]!="Submitted":raise HTTPException(status_code=409,detail="Only submitted departmental results can be rejected.")
+        db.execute(
+            """UPDATE course_grades SET status='Draft',submitted_at=NULL,updated_at=NOW()
+            WHERE id IN (SELECT grade_id FROM department_result_submission_grades WHERE submission_id=%s)
+            AND status='Submitted'""",(submission_id,)
+        )
+        db.execute("UPDATE department_result_submissions SET status='Rejected',reviewed_by=%s,reviewed_at=NOW() WHERE id=%s",(user["id"],submission_id))
+        log_action(db,"Departmental results rejected",f"Submission {submission_id}")
+    return {"rejected":True}
+
+
 @app.get("/api/admin/department-results")
 def department_results(user:dict[str,Any]=Depends(get_current_user)):
     require_roles(user,"Administrator")
