@@ -1006,7 +1006,7 @@ def lecturer_roster(offering_id:int,user:dict[str,Any]=Depends(get_current_user)
 
 @app.put("/api/lecturer/offerings/{offering_id}/grades")
 def save_grade_roster(offering_id:int,payload:GradeRosterInput,user:dict[str,Any]=Depends(get_current_user)):
-    require_roles(user,"Lecturer")
+    require_roles(user,"Administrator")
     ids=[g.student_id for g in payload.grades]
     if len(ids)!=len(set(ids)): raise HTTPException(status_code=422,detail="Uploaded roster contains duplicate students.")
     with connect() as db:
@@ -1029,7 +1029,7 @@ def save_grade_roster(offering_id:int,payload:GradeRosterInput,user:dict[str,Any
 
 @app.post("/api/lecturer/offerings/{offering_id}/submit")
 def submit_grade_roster(offering_id:int,user:dict[str,Any]=Depends(get_current_user)):
-    require_roles(user,"Lecturer")
+    require_roles(user,"Administrator")
     with connect() as db:
         assigned=db.execute("SELECT id FROM course_offerings WHERE id=%s AND lecturer_id=%s",(offering_id,user["lecturer_id"])).fetchone()
         if not assigned: raise HTTPException(status_code=404,detail="Assigned course offering not found.")
