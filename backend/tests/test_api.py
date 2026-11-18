@@ -21,7 +21,7 @@ def clean_database(monkeypatch):
     with main.connect() as db:
         db.execute("""TRUNCATE TABLE
             demo_change_requests,department_result_submission_grades,department_result_submissions,course_grades,course_registrations,course_offerings,courses,semesters,academic_sessions,
-            user_sessions,user_accounts,lecturers,results,students,activity_logs,backup_snapshots,
+            admission_applications,user_sessions,user_accounts,lecturers,results,students,activity_logs,backup_snapshots,
             departments,faculties RESTART IDENTITY CASCADE""")
         faculties = [
             ("Faculty of Engineering","ENG"),
@@ -238,6 +238,57 @@ def test_self_service_signup_and_bulk_course_registration():
     lecturer_signup=client.post("/api/auth/signup",json={"email":"lecturer@example.edu","password":"lecturer-password-123","role":"Lecturer","identity_number":"STAFF-SELF-001"})
     assert lecturer_signup.status_code==201 and lecturer_signup.json()["role"]=="Lecturer"
     assert len(client.get("/api/course-offerings").json())==3
+
+
+def test_new_student_admission_application_requires_admin_verification():
+    departments=client.get("/api/public/departments")
+    assert departments.status_code==200
+    department_id=next(d["id"] for d in departments.json() if d["code"]=="CPE")
+    application=client.post("/api/auth/apply",json={
+        "email":"new.applicant@example.edu",
+        "password":"applicant-password-123",
+        "first_name":"Nneka",
+        "last_name":"Eze",
+        "department_id":department_id,
+        "application_reference":"RSU-APP-2026-0042",
+    })
+    assert application.status_code==202
+    assert application.json()["status"]=="Pending"
+    assert client.post("/api/auth/apply",json={
+        "email":"NEW.APPLICANT@example.edu",
+        "password":"another-password-123",
+        "first_name":"Nneka",
+        "last_name":"Eze",
+        "department_id":department_id,
+    }).status_code==409
+    client.post("/api/auth/logout")
+    assert client.post("/api/auth/login",json={
+        "username":"new.applicant@example.edu",
+        "password":"applicant-password-123",
+    }).status_code==401
+    assert client.get("/api/admin/admission-applications").status_code==401
+    assert login().status_code==200
+    pending=client.get("/api/admin/admission-applications")
+    assert pending.status_code==200 and len(pending.json())==1
+    assert pending.json()[0]["application_reference"]=="RSU-APP-2026-0042"
+    application_id=application.json()["application_id"]
+    invalid=client.post(f"/api/admin/admission-applications/{application_id}/approve",json={
+        "matric_number":"NOT-A-MATRIC","level":"100",
+    })
+    assert invalid.status_code==422
+    approved=client.post(f"/api/admin/admission-applications/{application_id}/approve",json={
+        "matric_number":"DE/2026/0042","level":"100",
+    })
+    assert approved.status_code==200 and approved.json()["approved"] is True
+    assert approved.json()["student"]["matric_number"]=="DE/2026/0042"
+    assert client.get("/api/admin/admission-applications").json()==[]
+    client.post("/api/auth/logout")
+    signed_in=client.post("/api/auth/login",json={
+        "username":"new.applicant@example.edu",
+        "password":"applicant-password-123",
+    })
+    assert signed_in.status_code==200 and signed_in.json()["role"]=="Student"
+    assert client.get("/api/student/results").status_code==200
 
 
 def test_self_service_signup_requires_admin_created_academic_record():
