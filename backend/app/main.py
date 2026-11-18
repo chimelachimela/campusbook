@@ -1011,18 +1011,20 @@ def grade_submissions(user:dict[str,Any]=Depends(get_current_user)):
     with connect() as db:
         return db.execute(
             """SELECT o.id AS offering_id,c.course_code,c.title AS course_title,o.section,
+            c.level,d.name AS department_name,f.name AS faculty_name,
             s.name AS semester,a.name AS academic_session,
             l.first_name AS lecturer_first_name,l.last_name AS lecturer_last_name,
             COUNT(cr.id) FILTER (WHERE cr.status='Registered')::int AS roster_count,
             COUNT(g.id) FILTER (WHERE g.status='Submitted')::int AS submitted_count,
             COUNT(g.id) FILTER (WHERE g.status='Published')::int AS published_count
             FROM course_offerings o JOIN courses c ON c.id=o.course_id
+            JOIN departments d ON d.id=c.department_id JOIN faculties f ON f.id=d.faculty_id
             JOIN semesters s ON s.id=o.semester_id JOIN academic_sessions a ON a.id=s.academic_session_id
             LEFT JOIN lecturers l ON l.id=o.lecturer_id
             LEFT JOIN course_registrations cr ON cr.course_offering_id=o.id
             LEFT JOIN course_grades g ON g.registration_id=cr.id
-            GROUP BY o.id,c.course_code,c.title,o.section,s.name,a.name,l.first_name,l.last_name
-            ORDER BY a.name DESC,s.name,c.course_code"""
+            GROUP BY o.id,c.course_code,c.title,o.section,c.level,d.name,f.name,s.name,a.name,l.first_name,l.last_name
+            ORDER BY f.name,d.name,c.level,a.name DESC,s.name,c.course_code"""
         ).fetchall()
 
 
