@@ -133,10 +133,19 @@ class GradeRosterInput(BaseModel):
     grades: list[GradeEntry] = Field(min_length=1, max_length=500)
 
 
+class FacultyInput(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    code: str = Field(min_length=2, max_length=16)
+
+
 class DepartmentInput(BaseModel):
     name: str = Field(min_length=2, max_length=100)
     code: str = Field(min_length=2, max_length=12)
     faculty_id: int = Field(gt=0)
+
+
+class LecturerAssignmentInput(BaseModel):
+    lecturer_id: int | None = Field(default=None, gt=0)
 
 
 class ResultInput(BaseModel):
@@ -718,6 +727,18 @@ def provision_account(payload:AccountProvisionInput,user:dict[str,Any]=Depends(g
     return row
 
 
+@app.post("/api/faculties",status_code=201)
+def create_faculty(payload:FacultyInput,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        try:
+            row=db.execute("INSERT INTO faculties (name,code) VALUES (%s,%s) RETURNING id,name,code",(payload.name.strip(),payload.code.strip().upper())).fetchone()
+        except psycopg.errors.UniqueViolation as exc:
+            raise HTTPException(status_code=409,detail="Faculty name or code already exists.") from exc
+        log_action(db,"Faculty created",payload.name.strip())
+    return row
+
+
 @app.get("/api/faculties")
 def list_faculties(user:dict[str,Any]=Depends(get_current_user)):
     require_roles(user,"Administrator","Lecturer","Student")
@@ -1005,6 +1026,38 @@ def create_course_offering(payload:OfferingInput,user:dict[str,Any]=Depends(get_
     return row
 
 
+@app.get("/api/admin/course-offerings")
+def list_admin_course_offerings(user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        return db.execute(
+            """SELECT o.id AS offering_id,o.lecturer_id,o.status,o.section,c.id AS course_id,
+            c.course_code,c.title AS course_title,c.level,c.credit_units,d.name AS department,
+            s.name AS semester,a.name AS academic_session,l.first_name AS lecturer_first_name,
+            l.last_name AS lecturer_last_name
+            FROM course_offerings o JOIN courses c ON c.id=o.course_id
+            JOIN departments d ON d.id=c.department_id JOIN semesters s ON s.id=o.semester_id
+            JOIN academic_sessions a ON a.id=s.academic_session_id
+            LEFT JOIN lecturers l ON l.id=o.lecturer_id
+            ORDER BY a.name DESC,s.name,d.name,c.level,c.course_code"""
+        ).fetchall()
+
+
+@app.patch("/api/admin/course-offerings/{offering_id}/lecturer")
+def assign_offering_lecturer(offering_id:int,payload:LecturerAssignmentInput,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        row=db.execute(
+            """UPDATE course_offerings SET lecturer_id=%s WHERE id=%s
+            RETURNING id,course_id,semester_id,lecturer_id,status""",
+            (payload.lecturer_id,offering_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404,detail="Course offering not found.")
+        log_action(db,"Course lecturer assignment changed",f"Offering {offering_id}; lecturer {payload.lecturer_id or 'unassigned'}")
+    return row
+
+
 @app.get("/api/admin/grade-submissions")
 def grade_submissions(user:dict[str,Any]=Depends(get_current_user)):
     require_roles(user,"Administrator")
@@ -1043,10 +1096,28 @@ def create_academic_session(payload:AcademicSessionInput,user:dict[str,Any]=Depe
     with connect() as db:
         if payload.is_current:
             db.execute("UPDATE academic_sessions SET is_current=FALSE WHERE is_current=TRUE")
+        if not payload.starts_on or not payload.ends_on:
+            raise HTTPException(status_code=422,detail="Session start and end dates are required to generate the semester calendar.")
         try:
             row=db.execute("INSERT INTO academic_sessions (name,starts_on,ends_on,is_current) VALUES (%s,%s,%s,%s) RETURNING *",(payload.name.strip(),payload.starts_on,payload.ends_on,payload.is_current)).fetchone()
         except psycopg.errors.UniqueViolation as exc:
             raise HTTPException(status_code=409,detail="Academic session already exists.") from exc
+        total_days=(payload.ends_on-payload.starts_on).days+1
+        midpoint=payload.starts_on+timedelta(days=total_days//2)
+        calendar=[
+            ("First Semester",payload.starts_on,midpoint),
+            ("Second Semester",midpoint+timedelta(days=1),payload.ends_on),
+        ]
+        for semester_name,semester_start,semester_end in calendar:
+            registration_opens=datetime.combine(semester_start-timedelta(days=14),datetime.min.time(),tzinfo=timezone.utc)
+            registration_closes=datetime.combine(semester_start+timedelta(days=14),datetime.min.time(),tzinfo=timezone.utc)
+            db.execute(
+                """INSERT INTO semesters
+                (academic_session_id,name,starts_on,ends_on,registration_opens_at,registration_closes_at,is_published)
+                VALUES (%s,%s,%s,%s,%s,%s,TRUE)""",
+                (row["id"],semester_name,semester_start,semester_end,registration_opens,registration_closes),
+            )
+        log_action(db,"Academic session created",f"{row['name']} with First and Second Semester calendars")
     return row
 
 
@@ -1055,7 +1126,7 @@ def list_semesters(session_id:int|None=Query(default=None,gt=0),user:dict[str,An
     require_roles(user,"Administrator")
     with connect() as db:
         if session_id:
-            return db.execute("SELECT id,academic_session_id,name,registration_opens_at,registration_closes_at,is_published FROM semesters WHERE academic_session_id=%s ORDER BY id",(session_id,)).fetchall()
+            return db.execute("SELECT id,academic_session_id,name,starts_on,ends_on,registration_opens_at,registration_closes_at,is_published FROM semesters WHERE academic_session_id=%s ORDER BY id",(session_id,)).fetchall()
         return db.execute("SELECT id,academic_session_id,name,registration_opens_at,registration_closes_at,is_published FROM semesters ORDER BY academic_session_id DESC,id").fetchall()
 
 
