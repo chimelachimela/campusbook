@@ -392,6 +392,8 @@ def dashboard(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any
         total = db.execute("SELECT COUNT(*) AS count FROM students").fetchone()["count"]
         active = db.execute("SELECT COUNT(*) AS count FROM students WHERE status='Active'").fetchone()["count"]
         departments = db.execute("SELECT COUNT(*) AS count FROM departments").fetchone()["count"]
+        faculties = db.execute("SELECT COUNT(*) AS count FROM faculties").fetchone()["count"]
+        lecturers = db.execute("SELECT COUNT(*) AS count FROM lecturers").fetchone()["count"]
         backups = db.execute("SELECT COUNT(*) AS count FROM backup_snapshots").fetchone()["count"]
         recent = db.execute(
             "SELECT id, action, details, created_at FROM activity_logs ORDER BY id DESC LIMIT 6"
@@ -403,6 +405,8 @@ def dashboard(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any
         "total_students": total,
         "active_students": active,
         "departments": departments,
+        "faculties": faculties,
+        "lecturers": lecturers,
         "available_backups": backups,
         "recent_activity": recent,
         "students_by_department": by_department,
