@@ -183,3 +183,48 @@ td{color:#35435a;font-size:12px}
 .cgpa-summary span,.cgpa-summary small{font-size:12px;color:#697894}
 .cgpa-summary strong{font-size:38px;line-height:1.1;color:#263f9c}
 @media(max-width:760px){.exam-content{padding:20px 14px}.exam-gradebook-toolbar,.exam-submit-bar{align-items:stretch;flex-direction:column}.exam-submit-bar button{width:100%}}
+
+
+/* Create forms: use a readable single-column layout across admin and demo flows. */
+.admin-v2-form,
+.form-grid,
+.auth-page-form {
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  max-width: 560px;
+  align-items: stretch;
+}
+.admin-v2-form > label,
+.form-grid > label,
+.auth-page-form > label {
+  width: 100%;
+  min-width: 0;
+}
+.admin-v2-form input,
+.admin-v2-form select,
+.form-grid input,
+.form-grid select,
+.auth-page-form input,
+.auth-page-form select {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+}
+.form-grid label.full {
+  grid-column: auto;
+}
+.admin-v2-form > .admin-v2-primary,
+.form-grid > .primary-button,
+.auth-page-form > .primary-button {
+  justify-self: start;
+}
+.admin-v2-admission-row .admin-v2-form {
+  max-width: 480px;
+}
+@media (max-width: 620px) {
+  .admin-v2-form,
+  .form-grid,
+  .auth-page-form {
+    max-width: 100%;
+  }
+}
