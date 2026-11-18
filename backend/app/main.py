@@ -1130,10 +1130,11 @@ def submit_department_results(payload:DepartmentSubmissionInput,user:dict[str,An
                 VALUES (%s,%s,%s,%s) RETURNING id""",
                 (user["department_id"],payload.semester_id,payload.level,user["id"])
             ).fetchone()
-        db.executemany(
-            "INSERT INTO department_result_submission_grades (submission_id,grade_id) VALUES (%s,%s)",
-            [(submission["id"],g["id"]) for g in grades]
-        )
+        with db.cursor() as cursor:
+            cursor.executemany(
+                "INSERT INTO department_result_submission_grades (submission_id,grade_id) VALUES (%s,%s)",
+                [(submission["id"],g["id"]) for g in grades]
+            )
         log_action(db,"Departmental results submitted",f"Department {user['department_id']}; semester {payload.semester_id}; level {payload.level}")
     return {"submission_id":submission["id"],"grades_submitted":len(grades),"status":"Submitted"}
 
