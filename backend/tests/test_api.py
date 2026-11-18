@@ -254,7 +254,7 @@ def test_demo_admin_and_role_demos_write_only_to_isolated_database(monkeypatch):
     main.initialize_database()
     with main.connect() as demo_db:
         department_id=demo_db.execute("SELECT id FROM departments WHERE name='Computer Engineering'").fetchone()["id"]
-        student=demo_db.execute("INSERT INTO students (matric_number,first_name,last_name,email,department,department_id,level,status) VALUES ('DE/2023/0998','Demo','Student','demo.student@example.edu','Computer Engineering',%s,'300','Active') RETURNING id",(department_id,)).fetchone()
+        student=demo_db.execute("INSERT INTO students (matric_number,first_name,last_name,email,department,department_id,level,status,created_at) VALUES ('DE/2023/0998','Demo','Student','demo.student@example.edu','Computer Engineering',%s,'300','Active',NOW()) RETURNING id",(department_id,)).fetchone()
         lecturer=demo_db.execute("INSERT INTO lecturers (staff_number,first_name,last_name,department_id) VALUES ('DEMO-LECT-TEST','Demo','Lecturer',%s) RETURNING id",(department_id,)).fetchone()
         demo_db.execute("INSERT INTO user_accounts (username,password_hash,role) VALUES ('demo.admin',%s,'Administrator')",(main.PASSWORD_HASHER.hash("demo-admin-password-123"),))
         demo_db.execute("INSERT INTO user_accounts (username,password_hash,role,student_id) VALUES ('demo.student',%s,'Student',%s)",(main.PASSWORD_HASHER.hash("demo-student-password-123"),student["id"]))
@@ -262,7 +262,7 @@ def test_demo_admin_and_role_demos_write_only_to_isolated_database(monkeypatch):
     monkeypatch.setenv("DATABASE_URL",primary_url)
     with main.connect() as primary:
         department_id=primary.execute("SELECT id FROM departments WHERE name='Computer Engineering'").fetchone()["id"]
-        student=primary.execute("INSERT INTO students (matric_number,first_name,last_name,department,department_id,level,status) VALUES ('DE/2023/0998','Demo','Student','Computer Engineering',%s,'300','Active') RETURNING id",(department_id,)).fetchone()
+        student=primary.execute("INSERT INTO students (matric_number,first_name,last_name,email,department,department_id,level,status,created_at) VALUES ('DE/2023/0998','Demo','Student','demo.student@example.edu','Computer Engineering',%s,'300','Active',NOW()) RETURNING id",(department_id,)).fetchone()
         lecturer=primary.execute("INSERT INTO lecturers (staff_number,first_name,last_name,department_id) VALUES ('DEMO-LECT-TEST','Demo','Lecturer',%s) RETURNING id",(department_id,)).fetchone()
         primary.execute("INSERT INTO user_accounts (username,password_hash,role) VALUES ('demo.admin',%s,'Administrator')",(main.PASSWORD_HASHER.hash("demo-admin-password-123"),))
         primary.execute("INSERT INTO user_accounts (username,password_hash,role,student_id) VALUES ('demo.student',%s,'Student',%s)",(main.PASSWORD_HASHER.hash("demo-student-password-123"),student["id"]))
