@@ -1267,7 +1267,7 @@ def save_officer_grade_roster(offering_id:int,payload:GradeRosterInput,user:dict
                 WHEN %s>=45 THEN 'D' WHEN %s>=40 THEN 'E' ELSE 'F' END,'Draft',%s,NOW())
                 ON CONFLICT (registration_id) DO UPDATE SET score=EXCLUDED.score,letter_grade=EXCLUDED.letter_grade,
                 status='Draft',entered_by=EXCLUDED.entered_by,updated_at=NOW()""",
-                (registration_id,grade.score,grade.score,grade.score,grade.score,grade.score,user["id"])
+                (registration_id,grade.score,grade.score,grade.score,grade.score,grade.score,grade.score,user["id"])
             )
         log_action(db,"Examination officer saved course grade sheet",f"Department {user['department_id']}; offering {offering_id}; {len(ids)} scores")
     return {"saved":len(ids),"status":"Draft"}
