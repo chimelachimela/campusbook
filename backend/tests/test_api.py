@@ -311,6 +311,7 @@ def test_demo_admin_and_role_demos_write_only_to_isolated_database(monkeypatch):
         demo_db.execute("INSERT INTO user_accounts (username,password_hash,role) VALUES ('demo.admin',%s,'Administrator')",(main.PASSWORD_HASHER.hash("demo-admin-password-123"),))
         demo_db.execute("INSERT INTO user_accounts (username,password_hash,role,student_id) VALUES ('demo.student',%s,'Student',%s)",(main.PASSWORD_HASHER.hash("demo-student-password-123"),student["id"]))
         demo_db.execute("INSERT INTO user_accounts (username,password_hash,role,lecturer_id) VALUES ('demo.lecturer',%s,'Lecturer',%s)",(main.PASSWORD_HASHER.hash("demo-lecturer-password-123"),lecturer["id"]))
+        demo_db.execute("INSERT INTO user_accounts (username,password_hash,role,department_id) VALUES ('demo.exams-officer',%s,'ExamsOfficer',%s)",(main.PASSWORD_HASHER.hash("demo-exams-password-123"),department_id))
     monkeypatch.setenv("DATABASE_URL",primary_url)
     with main.connect() as primary:
         department_id=primary.execute("SELECT id FROM departments WHERE name='Computer Engineering'").fetchone()["id"]
@@ -319,6 +320,7 @@ def test_demo_admin_and_role_demos_write_only_to_isolated_database(monkeypatch):
         primary.execute("INSERT INTO user_accounts (username,password_hash,role) VALUES ('demo.admin',%s,'Administrator')",(main.PASSWORD_HASHER.hash("demo-admin-password-123"),))
         primary.execute("INSERT INTO user_accounts (username,password_hash,role,student_id) VALUES ('demo.student',%s,'Student',%s)",(main.PASSWORD_HASHER.hash("demo-student-password-123"),student["id"]))
         primary.execute("INSERT INTO user_accounts (username,password_hash,role,lecturer_id) VALUES ('demo.lecturer',%s,'Lecturer',%s)",(main.PASSWORD_HASHER.hash("demo-lecturer-password-123"),lecturer["id"]))
+        primary.execute("INSERT INTO user_accounts (username,password_hash,role,department_id) VALUES ('demo.exams-officer',%s,'ExamsOfficer',%s)",(main.PASSWORD_HASHER.hash("demo-exams-password-123"),department_id))
     assert client.post("/api/auth/demo-admin").status_code==200
     assert client.post("/api/students",json=student_payload("DE/2023/0999")).status_code==201
     with main.connect() as primary:
@@ -330,4 +332,14 @@ def test_demo_admin_and_role_demos_write_only_to_isolated_database(monkeypatch):
     assert client.post("/api/auth/logout").status_code==200
     assert client.post("/api/auth/demo-login",json={"role":"Lecturer"}).status_code==200
     assert client.get("/api/course-offerings").status_code==200
+    assert client.post("/api/auth/logout").status_code==200
+    officer_login=client.post("/api/auth/demo-login",json={"role":"ExamsOfficer"})
+    assert officer_login.status_code==200
+    assert officer_login.json()["role"]=="ExamsOfficer"
+    assert client.get("/api/exams-officer/ready-results").status_code==200
+
+
+def test_demo_login_rejects_unknown_roles_with_validation_error():
+    response=client.post("/api/auth/demo-login",json={"role":"Administrator"})
+    assert response.status_code==422
 
