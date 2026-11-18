@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
-import { Activity, BookOpen, Building2, ChevronDown, ChevronRight, Database, GraduationCap, LayoutDashboard, Plus, RefreshCw, Users, X, Pencil, Trash2, Search, CalendarDays, UserCog, Layers3 } from 'lucide-react';
+import { Activity, BookOpen, Building2, ChevronDown, ChevronRight, Database, GraduationCap, LayoutDashboard, Plus, RefreshCw, ShieldCheck, Users, X, Pencil, Trash2, Search, CalendarDays, UserCog, Layers3 } from 'lucide-react';
 
 type User={id:number;username:string;role:string};
 type Faculty={id:number;name:string;code:string;department_count:number};
