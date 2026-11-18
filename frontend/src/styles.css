@@ -228,3 +228,8 @@ td{color:#35435a;font-size:12px}
     max-width: 100%;
   }
 }
+
+
+/* Align session and semester checkbox controls with their labels. */
+.admin-v2-check { display:flex; align-items:center; gap:10px; min-height:24px; line-height:1.4; cursor:pointer; }
+.admin-v2-check input[type="checkbox"] { appearance:auto; -webkit-appearance:checkbox; display:block; flex:0 0 16px; width:16px; height:16px; min-height:16px; margin:0; padding:0; align-self:center; }

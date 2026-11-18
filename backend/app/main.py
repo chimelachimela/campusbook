@@ -67,7 +67,7 @@ class LoginInput(BaseModel):
 class SignupInput(BaseModel):
     email: str = Field(min_length=6,max_length=160,pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     password: str = Field(min_length=8,max_length=200)
-    role: str = Field(pattern="^(Student|Lecturer)$")
+    role: str = Field(pattern="^(Student|Lecturer|ExamsOfficer)$")
     identity_number: str = Field(min_length=2,max_length=40)
 
 
@@ -829,7 +829,7 @@ def demo_admin_login(response:Response):
 
 @app.post("/api/auth/demo-login")
 def demo_role_login(payload:DemoLoginInput,response:Response):
-    username="demo.student" if payload.role=="Student" else "demo.lecturer"
+    username={"Student":"demo.student","Lecturer":"demo.lecturer","ExamsOfficer":"demo.exams-officer"}[payload.role]
     return _issue_demo_session(username,payload.role,response)
 
 
@@ -843,7 +843,7 @@ async def isolate_demo_accounts(request:Request,call_next):
                 is_demo=bool(primary.execute(
                     """SELECT 1 FROM user_sessions s JOIN user_accounts u ON u.id=s.user_id
                     WHERE s.token_hash=%s AND s.revoked_at IS NULL AND s.expires_at>%s
-                    AND u.username IN ('demo.admin','demo.student','demo.lecturer') AND u.is_active=TRUE""",
+                    AND u.username IN ('demo.admin','demo.student','demo.lecturer','demo.exams-officer') AND u.is_active=TRUE""",
                     (_session_digest(token),datetime.now(timezone.utc))
                 ).fetchone())
         except Exception:
