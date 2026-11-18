@@ -742,14 +742,25 @@ async def protect_demo_administrator(request:Request,call_next):
         async def receive():
             return {"type":"http.request","body":raw_body,"more_body":False}
         request._receive=receive
+        try:
+            payload=json.loads(raw_body.decode("utf-8")) if raw_body else {}
+        except Exception:
+            payload={}
+        if not isinstance(payload,dict): payload={}
+        if request.method=="DELETE" and re.fullmatch(r"/api/students/\d+",request.url.path):
+            student_id=int(request.url.path.rsplit("/",1)[1])
+            with connect() as demo_db:
+                deleted_student=demo_db.execute("SELECT matric_number,first_name,last_name,department,level,status FROM students WHERE id=%s",(student_id,)).fetchone()
+            if deleted_student: payload={"_deleted_student":dict(deleted_student)}
         response=await call_next(request)
-        if request.method in {"POST","PUT","PATCH","DELETE"} and response.status_code<400 and request.url.path not in {"/api/auth/logout"}:
-            try:
-                payload=json.loads(raw_body.decode("utf-8")) if raw_body else {}
-            except Exception:
-                payload={"note":"Non-JSON request body"}
-            if isinstance(payload,dict):
-                payload={k:("[REDACTED]" if any(secret in k.lower() for secret in ("password","token","secret")) else v) for k,v in payload.items()}
+        reviewable=(
+            (request.method,request.url.path) in {("POST","/api/faculties"),("POST","/api/departments"),("POST","/api/students"),("POST","/api/admin/lecturers"),("POST","/api/admin/courses"),("POST","/api/admin/course-offerings"),("POST","/api/admin/academic-sessions")}
+            or (request.method=="PUT" and re.fullmatch(r"/api/students/\d+",request.url.path))
+            or (request.method=="DELETE" and re.fullmatch(r"/api/students/\d+",request.url.path))
+            or (request.method=="PATCH" and re.fullmatch(r"/api/admin/course-offerings/\d+/lecturer",request.url.path))
+        )
+        if reviewable and response.status_code<400:
+            payload={k:("[REDACTED]" if any(secret in k.lower() for secret in ("password","token","secret")) else v) for k,v in payload.items()}
             with connect_primary() as primary:
                 primary.execute(
                     "INSERT INTO demo_change_requests (method,path,payload,status,created_at) VALUES (%s,%s,%s,'Pending',%s)",
@@ -779,8 +790,43 @@ def review_demo_change_request(request_id:int,payload:DemoChangeReviewInput,user
     require_roles(user,"Administrator")
     if user.get("username")=="demo.admin": raise HTTPException(status_code=403,detail="The demo workspace cannot review its own change requests.")
     with connect_primary() as db:
+        change=db.execute("SELECT id,method,path,payload FROM demo_change_requests WHERE id=%s AND status='Pending'",(request_id,)).fetchone()
+    if not change: raise HTTPException(status_code=404,detail="Pending demo change request not found.")
+    if payload.decision=="Approved":
+        body=change["payload"] or {}
+        method,path=change["method"],change["path"]
+        try:
+            if method=="POST" and path=="/api/faculties": create_faculty(FacultyInput(**body),user)
+            elif method=="POST" and path=="/api/departments": create_department(DepartmentInput(**body),user)
+            elif method=="POST" and path=="/api/students": create_student(StudentInput(**body),user)
+            elif method=="PUT" and re.fullmatch(r"/api/students/\d+",path):
+                demo_id=int(path.rsplit("/",1)[1])
+                with connect_primary() as db:
+                    target=db.execute("SELECT id FROM students WHERE id=%s",(demo_id,)).fetchone()
+                    if not target: target=db.execute("SELECT id FROM students WHERE matric_number=%s",(body.get("matric_number"),)).fetchone()
+                if target: update_student(target["id"],StudentInput(**body),user)
+                else: create_student(StudentInput(**body),user)
+            elif method=="DELETE" and re.fullmatch(r"/api/students/\d+",path):
+                record=body.get("_deleted_student") or {}
+                if not record.get("matric_number"): raise HTTPException(status_code=422,detail="Deleted student details were not captured; this change cannot be applied.")
+                with connect_primary() as db:
+                    deleted=db.execute("DELETE FROM students WHERE matric_number=%s RETURNING id",(record["matric_number"],)).fetchone()
+                    if not deleted: raise HTTPException(status_code=404,detail="The student to delete no longer exists in the institution database.")
+                    log_action(db,"Student deleted by approved demo request",record["matric_number"])
+            elif method=="POST" and path=="/api/admin/lecturers": create_lecturer(LecturerInput(**body),user)
+            elif method=="POST" and path=="/api/admin/courses": create_course(CourseInput(**body),user)
+            elif method=="POST" and path=="/api/admin/course-offerings": create_course_offering(OfferingInput(**body),user)
+            elif method=="POST" and path=="/api/admin/academic-sessions": create_academic_session(AcademicSessionInput(**body),user)
+            elif method=="PATCH" and re.fullmatch(r"/api/admin/course-offerings/\d+/lecturer",path):
+                assign_offering_lecturer(int(path.split("/")[4]),LecturerAssignmentInput(**body),user)
+            else: raise HTTPException(status_code=422,detail="This demo change type is not eligible for automatic application. Reject it or make the change directly in the institution workspace.")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=409,detail=f"The change could not be applied safely: {type(exc).__name__}. The request remains pending.") from exc
+    with connect_primary() as db:
         row=db.execute("UPDATE demo_change_requests SET status=%s,reviewed_at=%s,reviewed_by=%s,review_note=%s WHERE id=%s AND status='Pending' RETURNING id,status,reviewed_at,review_note",(payload.decision,datetime.now(timezone.utc),user["id"],payload.note.strip(),request_id)).fetchone()
-        if not row: raise HTTPException(status_code=404,detail="Pending demo change request not found.")
+        if not row: raise HTTPException(status_code=409,detail="This request was already reviewed.")
         log_action(db,"Demo change "+payload.decision.lower(),f"Request #{request_id}: {payload.note.strip()}")
     return row
 
