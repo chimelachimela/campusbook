@@ -23,7 +23,7 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 MIGRATION_FILE = BASE_DIR / "migrations" / "001_initial_postgres.sql"
-BACKUP_VERSION = 2
+BACKUP_VERSION = 3
 PASSWORD_HASHER = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2)
 SESSION_HOURS = 12
 
@@ -252,7 +252,7 @@ def require_roles(user: dict[str, Any], *roles: str) -> None:
 SNAPSHOT_TABLES = (
     "faculties","departments","students","lecturers","academic_sessions","semesters",
     "courses","course_offerings","course_registrations","user_accounts","course_grades",
-    "results","activity_logs",
+    "department_result_submissions","department_result_submission_grades","results","activity_logs",
 )
 
 
@@ -299,9 +299,15 @@ def _validate_snapshot(snapshot:Any)->dict[str,list[dict[str,Any]]]:
         "results":{"id","student_id","course_code","course_title","score","semester"},
         "activity_logs":{"id","action","details","created_at"},
     }
-    if not isinstance(snapshot,dict) or snapshot.get("format_version") not in (1,2):
+    v3_required={**v2_required,
+        "semesters":v2_required["semesters"]|{"starts_on","ends_on"},
+        "user_accounts":v2_required["user_accounts"]|{"department_id"},
+        "department_result_submissions":{"id","department_id","semester_id","level","status","submitted_by","reviewed_by","submitted_at","reviewed_at","review_note"},
+        "department_result_submission_grades":{"id","submission_id","grade_id"},
+    }
+    if not isinstance(snapshot,dict) or snapshot.get("format_version") not in (1,2,3):
         raise HTTPException(status_code=422,detail="Unsupported or invalid backup format.")
-    required=v2_required if snapshot["format_version"]==2 else legacy_required
+    required=v3_required if snapshot["format_version"]==3 else (v2_required if snapshot["format_version"]==2 else legacy_required)
     tables=snapshot.get("tables")
     if not isinstance(tables,dict):
         raise HTTPException(status_code=422,detail="Backup tables are missing.")
@@ -597,9 +603,13 @@ def restore_backup(filename:str,user:dict[str,Any]=Depends(get_current_user))->d
             for row in tables["activity_logs"]:
                 db.execute("INSERT INTO activity_logs (action,details,created_at) VALUES (%s,%s,%s)",(row["action"],row["details"],row["created_at"]))
         else:
-            for table in ("course_grades","course_registrations","course_offerings","courses","semesters","academic_sessions","user_accounts","lecturers","results","students","departments","faculties","activity_logs"):
+            for table in ("department_result_submission_grades","department_result_submissions","course_grades","course_registrations","course_offerings","courses","semesters","academic_sessions","user_sessions","user_accounts","lecturers","results","students","departments","faculties","activity_logs"):
                 db.execute(sql.SQL("DELETE FROM {}").format(sql.Identifier(table)))
-            for table in ("faculties","departments","students","lecturers","academic_sessions","semesters","courses","course_offerings","course_registrations","user_accounts","course_grades","results","activity_logs"):
+            restore_order=("faculties","departments","students","lecturers","academic_sessions","semesters","courses","course_offerings","course_registrations","user_accounts","course_grades")
+            if snapshot["format_version"]==3:
+                restore_order+=("department_result_submissions","department_result_submission_grades")
+            restore_order+=("results","activity_logs")
+            for table in restore_order:
                 _insert_snapshot_rows(db,table,tables[table])
             _reset_snapshot_sequences(db)
             db.execute("UPDATE user_sessions SET revoked_at=NOW() WHERE revoked_at IS NULL")
