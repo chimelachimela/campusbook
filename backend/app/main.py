@@ -181,7 +181,7 @@ def connect_primary():
 
 @contextmanager
 def connect():
-    """Use the isolated demo clone only for requests authenticated as demo.admin."""
+    """Use the isolated demo clone for authenticated demo administrator, student and lecturer sessions."""
     primary_url = os.getenv("DATABASE_URL", DATABASE_URL)
     demo_url = os.getenv("CAMPUSBOOK_DEMO_DATABASE_URL", "")
     url = demo_url if _DEMO_DATABASE_ACTIVE.get() and demo_url else primary_url
@@ -724,7 +724,7 @@ def demo_role_login(payload:DemoLoginInput,response:Response):
 
 
 @app.middleware("http")
-async def protect_demo_administrator(request:Request,call_next):
+async def isolate_demo_accounts(request:Request,call_next):
     token=request.cookies.get("campusbook_session")
     is_demo=False
     if token and request.url.path!="/api/auth/demo-admin":
