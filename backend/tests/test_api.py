@@ -200,7 +200,7 @@ def test_department_examination_officer_submits_and_admin_approves_department_re
     assert queue.status_code==200 and queue.json()[0]["status"]=="Submitted"
     approved=client.post(f"/api/admin/department-submissions/{submitted.json()['submission_id']}/approve")
     assert approved.status_code==200 and approved.json()["grades_published"]==1
-    assert client.get("/api/department-results").status_code==200
+    assert client.get("/api/admin/department-results").status_code==200
     assert login("examstudent","test-student-password-123").status_code==200
     assert client.get("/api/student/results").json()[0]["score"]==91
 
