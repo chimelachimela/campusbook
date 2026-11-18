@@ -64,7 +64,7 @@ const bytes=(n:number)=>n<1024?n+' B':(n/1024).toFixed(1)+' KB';
 const initials=(s:Student)=>(s.first_name[0]+s.last_name[0]).toUpperCase();
 
 
-function PortalFrame({user,onLogout,children,activePage,onNavigate}:{user:AuthUser;onLogout:()=>void;children:ReactNode;activePage:string;onNavigate:(id:string)=>void}){
+function PortalFrame({user,onLogout,children,activePage,onNavigate}:{user:AuthUser;onLogout:()=>void;children:ReactNode;activePage?:string;onNavigate?:(id:string)=>void}){
  const [mobileOpen,setMobileOpen]=useState(false);
  const items=user.role==='Student'?[{label:'Course Registration',id:'course-registration',icon:BookOpen},{label:'My Courses',id:'my-courses',icon:GraduationCap},{label:'Published Results',id:'published-results',icon:Activity}]:[{label:'My Courses',id:'lecturer-courses',icon:BookOpen},{label:'Class Grade Roster',id:'grade-roster',icon:Users}];
  return <div className="app-shell">
@@ -73,7 +73,7 @@ function PortalFrame({user,onLogout,children,activePage,onNavigate}:{user:AuthUs
    <div className="brand"><div className="brand-mark"><GraduationCap size={21}/></div><span>campus<span className="brand-light">book</span></span></div>
    <div className="workspace"><div className="workspace-avatar">RS</div><div><b>Rivers State University</b><small>Academic records</small></div></div>
    <div className="nav-label">WORKSPACE</div>
-   <nav>{items.map((item,i)=><button key={item.id} className={'nav-item '+(activePage===item.id?'active':'')} onClick={()=>{onNavigate(item.id);setMobileOpen(false);}}><item.icon size={18}/><span>{item.label}</span></button>)}</nav>
+   <nav>{items.map((item,i)=><button key={item.id} className={'nav-item '+((activePage?activePage===item.id:i===0)?'active':'')} onClick={()=>{if(onNavigate)onNavigate(item.id);else document.getElementById(item.id)?.scrollIntoView({behavior:'smooth',block:'start'});setMobileOpen(false);}}><item.icon size={18}/><span>{item.label}</span></button>)}</nav>
    <div className="sidebar-bottom"><div className="profile"><div className="profile-avatar">{user.role==='Student'?'ST':'LE'}</div><div><b>{user.username}</b><small>{user.role}</small></div></div></div>
   </aside>
   <main className="main">
