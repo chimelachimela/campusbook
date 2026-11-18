@@ -20,7 +20,7 @@ def clean_database(monkeypatch):
     client.cookies.clear()
     with main.connect() as db:
         db.execute("""TRUNCATE TABLE
-            department_result_submission_grades,department_result_submissions,course_grades,course_registrations,course_offerings,courses,semesters,academic_sessions,
+            demo_change_requests,department_result_submission_grades,department_result_submissions,course_grades,course_registrations,course_offerings,courses,semesters,academic_sessions,
             user_sessions,user_accounts,lecturers,results,students,activity_logs,backup_snapshots,
             departments,faculties RESTART IDENTITY CASCADE""")
         faculties = [
@@ -247,22 +247,34 @@ def test_self_service_signup_requires_admin_created_academic_record():
     assert response.status_code==404
 
 
-def test_public_demo_administrator_writes_to_isolated_database_and_queues_review(monkeypatch):
+def test_public_demo_administrator_writes_to_isolated_database_and_admin_can_apply_change(monkeypatch):
+    primary_url=os.getenv("DATABASE_URL","")
+    demo_url=os.getenv("CAMPUSBOOK_DEMO_DATABASE_URL","")
+    assert demo_url and demo_url!=primary_url
     monkeypatch.setenv("CAMPUSBOOK_DEMO_ADMIN_ENABLED","true")
-    monkeypatch.setenv("CAMPUSBOOK_DEMO_DATABASE_URL",os.getenv("DATABASE_URL",""))
+    monkeypatch.setenv("CAMPUSBOOK_DEMO_DATABASE_URL",demo_url)
+    monkeypatch.setenv("DATABASE_URL",demo_url)
+    main.initialize_database()
+    with main.connect() as demo_db:
+        demo_db.execute("INSERT INTO user_accounts (username,password_hash,role) VALUES ('demo.admin',%s,'Administrator')",(main.PASSWORD_HASHER.hash("demo-admin-password-123"),))
+    monkeypatch.setenv("DATABASE_URL",primary_url)
     with main.connect() as db:
-        db.execute(
-            "INSERT INTO user_accounts (username,password_hash,role) VALUES ('demo.admin',%s,'Administrator')",
-            (main.PASSWORD_HASHER.hash("demo-admin-password-123"),)
-        )
+        db.execute("INSERT INTO user_accounts (username,password_hash,role) VALUES ('demo.admin',%s,'Administrator')",(main.PASSWORD_HASHER.hash("demo-admin-password-123"),))
+        db.execute("INSERT INTO user_accounts (username,password_hash,role) VALUES ('institution.admin',%s,'Administrator')",(main.PASSWORD_HASHER.hash("institution-admin-password-123"),))
     demo=client.post("/api/auth/demo-admin")
     assert demo.status_code==200 and demo.json()["username"]=="demo.admin"
     assert client.get("/api/dashboard").status_code==200
     created=client.post("/api/students",json=student_payload("DE/2023/0999"))
     assert created.status_code==201
     with main.connect() as db:
-        request=db.execute("SELECT method,path,payload,status FROM demo_change_requests ORDER BY id DESC LIMIT 1").fetchone()
-        assert request["method"]=="POST" and request["path"]=="/api/students"
+        request=db.execute("SELECT id,method,path,payload,status FROM demo_change_requests WHERE method='POST' AND path='/api/students' ORDER BY id DESC LIMIT 1").fetchone()
         assert request["payload"]["matric_number"]=="DE/2023/0999"
         assert request["status"]=="Pending"
+        assert db.execute("SELECT 1 FROM students WHERE matric_number='DE/2023/0999'").fetchone() is None
     assert client.post("/api/auth/logout").status_code==200
+    login=client.post("/api/auth/login",json={"username":"institution.admin","password":"institution-admin-password-123"})
+    assert login.status_code==200
+    approved=client.post(f"/api/admin/demo-change-requests/{request['id']}/review",json={"decision":"Approved","note":"Verified in demo"})
+    assert approved.status_code==200 and approved.json()["status"]=="Approved"
+    with main.connect() as db:
+        assert db.execute("SELECT 1 FROM students WHERE matric_number='DE/2023/0999'").fetchone() is not None
