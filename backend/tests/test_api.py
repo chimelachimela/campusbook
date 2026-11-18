@@ -184,6 +184,7 @@ def test_department_examination_officer_compiles_course_scores_and_admin_approve
     assert client.post("/api/admin/accounts",json={"username":"examstudent","password":"test-student-password-123","role":"Student","student_id":student["id"]}).status_code==201
     assert login("examstudent","test-student-password-123").status_code==200
     assert client.post(f"/api/student/course-offerings/{offering['id']}/register").status_code==201
+    assert login().status_code==200
     officer=client.post("/api/admin/accounts",json={"username":"examofficer","password":"test-officer-password-123","role":"ExamsOfficer","department_id":department_id})
     assert officer.status_code==201
     assert login("examofficer","test-officer-password-123").status_code==200
