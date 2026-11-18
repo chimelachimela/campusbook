@@ -1262,10 +1262,12 @@ def save_officer_grade_roster(offering_id:int,payload:GradeRosterInput,user:dict
             existing=db.execute("SELECT status FROM course_grades WHERE registration_id=%s",(registration_id,)).fetchone()
             if existing and existing["status"] in ("Submitted","Approved","Published"):raise HTTPException(status_code=409,detail="A submitted or published grade cannot be edited.")
             db.execute(
-                """INSERT INTO course_grades (registration_id,score,status,entered_by,updated_at)
-                VALUES (%s,%s,'Draft',%s,NOW())
-                ON CONFLICT (registration_id) DO UPDATE SET score=EXCLUDED.score,status='Draft',entered_by=EXCLUDED.entered_by,updated_at=NOW()""",
-                (registration_id,grade.score,user["id"])
+                """INSERT INTO course_grades (registration_id,score,letter_grade,status,entered_by,updated_at)
+                VALUES (%s,%s,CASE WHEN %s>=70 THEN 'A' WHEN %s>=60 THEN 'B' WHEN %s>=50 THEN 'C'
+                WHEN %s>=45 THEN 'D' WHEN %s>=40 THEN 'E' ELSE 'F' END,'Draft',%s,NOW())
+                ON CONFLICT (registration_id) DO UPDATE SET score=EXCLUDED.score,letter_grade=EXCLUDED.letter_grade,
+                status='Draft',entered_by=EXCLUDED.entered_by,updated_at=NOW()""",
+                (registration_id,grade.score,grade.score,grade.score,grade.score,grade.score,user["id"])
             )
         log_action(db,"Examination officer saved course grade sheet",f"Department {user['department_id']}; offering {offering_id}; {len(ids)} scores")
     return {"saved":len(ids),"status":"Draft"}
