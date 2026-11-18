@@ -44,6 +44,7 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Create owner role required by migration defaults
         run: psql "$DATABASE_URL" -c "CREATE ROLE campusbook_owner; CREATE ROLE campusbook_app;"
+      - run: createdb -h localhost -U postgres campusbook_demo
       - run: pytest -v
 
   frontend:
