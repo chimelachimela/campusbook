@@ -228,7 +228,7 @@ def test_self_service_signup_and_bulk_course_registration():
         offering=client.post("/api/admin/course-offerings",json={"course_id":course["id"],"semester_id":semester_id,"section":"A","lecturer_id":lecturer["id"],"capacity":40})
         assert offering.status_code==201
         course_ids.append(offering.json()["id"])
-    signup=client.post("/api/auth/signup",json={"email":"student@example.edu","password":"student-password-123","role":"Student","identity_number":"DE/2023/0101"})
+    signup=client.post("/api/auth/signup",json={"email":"student@example.edu","password":"student-password-123","role":"Student","identity_number":"de.2023/0101"})
     assert signup.status_code==201 and signup.json()["role"]=="Student"
     bulk=client.post("/api/student/course-offerings/register",json={"course_offering_ids":course_ids})
     assert bulk.status_code==200 and bulk.json()["registered"]==3
