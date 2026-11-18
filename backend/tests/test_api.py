@@ -20,7 +20,7 @@ def clean_database(monkeypatch):
     client.cookies.clear()
     with main.connect() as db:
         db.execute("""TRUNCATE TABLE
-            course_grades,course_registrations,course_offerings,courses,semesters,academic_sessions,
+            demo_change_requests,department_result_submission_grades,department_result_submissions,course_grades,course_registrations,course_offerings,courses,semesters,academic_sessions,
             user_sessions,user_accounts,lecturers,results,students,activity_logs,backup_snapshots,
             departments,faculties RESTART IDENTITY CASCADE""")
         faculties = [
@@ -157,6 +157,54 @@ def test_backup_restore_round_trip_and_safety_snapshot():
     assert len(client.get("/api/backups").json()) == 2
 
 
+
+
+def test_academic_session_generates_semester_calendar_and_registration_windows():
+    response=client.post("/api/admin/academic-sessions",json={
+        "name":"2028/2029","starts_on":"2028-09-01","ends_on":"2029-06-30",
+        "is_current":True,"include_summer":True,
+    })
+    assert response.status_code==201
+    semesters=client.get("/api/admin/semesters").json()
+    generated=[x for x in semesters if x["academic_session_id"]==response.json()["id"]]
+    assert [x["name"] for x in generated]==["First Semester","Second Semester","Summer"]
+    assert all(x["starts_on"] and x["ends_on"] and x["registration_opens_at"] and x["registration_closes_at"] for x in generated)
+
+
+def test_department_examination_officer_submits_and_admin_approves_department_results():
+    student=client.post("/api/students",json=student_payload("DE/2023/0201")).json()
+    with main.connect() as db:
+        department_id=db.execute("SELECT id FROM departments WHERE code='CPE'").fetchone()["id"]
+        session_id=db.execute("INSERT INTO academic_sessions (name,is_current) VALUES ('2027/2028',TRUE) RETURNING id").fetchone()["id"]
+        semester_id=db.execute("INSERT INTO semesters (academic_session_id,name,is_published) VALUES (%s,'First Semester',TRUE) RETURNING id",(session_id,)).fetchone()["id"]
+    lecturer=client.post("/api/admin/lecturers",json={"staff_number":"STAFF-EXAM-001","first_name":"Grace","last_name":"Eze","department_id":department_id}).json()
+    course=client.post("/api/admin/courses",json={"department_id":department_id,"course_code":"CPE401","title":"Networks","credit_units":3,"level":"300"}).json()
+    offering=client.post("/api/admin/course-offerings",json={"course_id":course["id"],"semester_id":semester_id,"lecturer_id":lecturer["id"]}).json()
+    client.post("/api/admin/accounts",json={"username":"examstudent","password":"test-student-password-123","role":"Student","student_id":student["id"]})
+    client.post("/api/admin/accounts",json={"username":"examlecturer","password":"test-lecturer-password-123","role":"Lecturer","lecturer_id":lecturer["id"]})
+    officer=client.post("/api/admin/accounts",json={"username":"examofficer","password":"test-officer-password-123","role":"ExamsOfficer","department_id":department_id})
+    assert officer.status_code==201 and officer.json()["role"]=="ExamsOfficer"
+    assert login("examstudent","test-student-password-123").status_code==200
+    assert client.post(f"/api/student/course-offerings/{offering['id']}/register").status_code==201
+    assert login("examlecturer","test-lecturer-password-123").status_code==200
+    assert client.put(f"/api/lecturer/offerings/{offering['id']}/grades",json={"grades":[{"student_id":student["id"],"score":91}]}).status_code==200
+    assert client.post(f"/api/lecturer/offerings/{offering['id']}/submit").status_code==200
+    assert login("examofficer","test-officer-password-123").status_code==200
+    ready=client.get("/api/exams-officer/ready-results")
+    assert ready.status_code==200 and ready.json()[0]["submitted_grades"]==1
+    submitted=client.post("/api/exams-officer/submissions",json={"semester_id":semester_id,"level":"300"})
+    assert submitted.status_code==201 and submitted.json()["grades_submitted"]==1
+    assert client.get("/api/admin/department-submissions").status_code==403
+    assert login().status_code==200
+    queue=client.get("/api/admin/department-submissions")
+    assert queue.status_code==200 and queue.json()[0]["status"]=="Submitted"
+    approved=client.post(f"/api/admin/department-submissions/{submitted.json()['submission_id']}/approve")
+    assert approved.status_code==200 and approved.json()["grades_published"]==1
+    assert client.get("/api/admin/department-results").status_code==200
+    assert login("examstudent","test-student-password-123").status_code==200
+    assert client.get("/api/student/results").json()[0]["score"]==91
+
+
 def test_backup_validation_and_filename_guard():
     assert client.post("/api/backups/not-a-campusbook-backup.json/restore").status_code == 400
     assert client.post("/api/backups/campusbook-20260101-000000-000000.json/restore").status_code == 404
@@ -199,16 +247,34 @@ def test_self_service_signup_requires_admin_created_academic_record():
     assert response.status_code==404
 
 
-def test_public_demo_administrator_is_read_only(monkeypatch):
+def test_public_demo_administrator_writes_to_isolated_database_and_admin_can_apply_change(monkeypatch):
+    primary_url=os.getenv("DATABASE_URL","")
+    demo_url=os.getenv("CAMPUSBOOK_DEMO_DATABASE_URL","")
+    assert demo_url and demo_url!=primary_url
     monkeypatch.setenv("CAMPUSBOOK_DEMO_ADMIN_ENABLED","true")
+    monkeypatch.setenv("CAMPUSBOOK_DEMO_DATABASE_URL",demo_url)
+    monkeypatch.setenv("DATABASE_URL",demo_url)
+    main.initialize_database()
+    with main.connect() as demo_db:
+        demo_db.execute("INSERT INTO user_accounts (username,password_hash,role) VALUES ('demo.admin',%s,'Administrator')",(main.PASSWORD_HASHER.hash("demo-admin-password-123"),))
+    monkeypatch.setenv("DATABASE_URL",primary_url)
     with main.connect() as db:
-        db.execute(
-            "INSERT INTO user_accounts (username,password_hash,role) VALUES ('demo.admin',%s,'Administrator')",
-            (main.PASSWORD_HASHER.hash("demo-admin-password-123"),)
-        )
+        db.execute("INSERT INTO user_accounts (username,password_hash,role) VALUES ('demo.admin',%s,'Administrator')",(main.PASSWORD_HASHER.hash("demo-admin-password-123"),))
+        db.execute("INSERT INTO user_accounts (username,password_hash,role) VALUES ('institution.admin',%s,'Administrator')",(main.PASSWORD_HASHER.hash("institution-admin-password-123"),))
     demo=client.post("/api/auth/demo-admin")
     assert demo.status_code==200 and demo.json()["username"]=="demo.admin"
     assert client.get("/api/dashboard").status_code==200
-    blocked=client.post("/api/students",json=student_payload("DE/2023/0999"))
-    assert blocked.status_code==403 and "read-only" in blocked.json()["detail"].lower()
+    created=client.post("/api/students",json=student_payload("DE/2023/0999"))
+    assert created.status_code==201
+    with main.connect() as db:
+        request=db.execute("SELECT id,method,path,payload,status FROM demo_change_requests WHERE method='POST' AND path='/api/students' ORDER BY id DESC LIMIT 1").fetchone()
+        assert request["payload"]["matric_number"]=="DE/2023/0999"
+        assert request["status"]=="Pending"
+        assert db.execute("SELECT 1 FROM students WHERE matric_number='DE/2023/0999'").fetchone() is None
     assert client.post("/api/auth/logout").status_code==200
+    login=client.post("/api/auth/login",json={"username":"institution.admin","password":"institution-admin-password-123"})
+    assert login.status_code==200
+    approved=client.post(f"/api/admin/demo-change-requests/{request['id']}/review",json={"decision":"Approved","note":"Verified in demo"})
+    assert approved.status_code==200 and approved.json()["status"]=="Approved"
+    with main.connect() as db:
+        assert db.execute("SELECT 1 FROM students WHERE matric_number='DE/2023/0999'").fetchone() is not None

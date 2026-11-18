@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -23,9 +24,10 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 MIGRATION_FILE = BASE_DIR / "migrations" / "001_initial_postgres.sql"
-BACKUP_VERSION = 2
+BACKUP_VERSION = 3
 PASSWORD_HASHER = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2)
 SESSION_HOURS = 12
+_DEMO_DATABASE_ACTIVE: ContextVar[bool] = ContextVar('campusbook_demo_database_active', default=False)
 
 app = FastAPI(
     title="CampusBook API",
@@ -81,9 +83,10 @@ class BootstrapInput(BaseModel):
 class AccountProvisionInput(BaseModel):
     username: str = Field(min_length=3, max_length=80)
     password: str = Field(min_length=12, max_length=200)
-    role: str = Field(pattern="^(Administrator|Lecturer|Student)$")
+    role: str = Field(pattern="^(Administrator|Lecturer|Student|ExamsOfficer)$")
     student_id: int | None = Field(default=None, gt=0)
     lecturer_id: int | None = Field(default=None, gt=0)
+    department_id: int | None = Field(default=None, gt=0)
 
 
 class AcademicSessionInput(BaseModel):
@@ -91,6 +94,7 @@ class AcademicSessionInput(BaseModel):
     starts_on: date | None = None
     ends_on: date | None = None
     is_current: bool = False
+    include_summer: bool = False
 
 
 class SemesterInput(BaseModel):
@@ -133,10 +137,24 @@ class GradeRosterInput(BaseModel):
     grades: list[GradeEntry] = Field(min_length=1, max_length=500)
 
 
+class FacultyInput(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    code: str = Field(min_length=2, max_length=16)
+
+
 class DepartmentInput(BaseModel):
     name: str = Field(min_length=2, max_length=100)
     code: str = Field(min_length=2, max_length=12)
     faculty_id: int = Field(gt=0)
+
+
+class LecturerAssignmentInput(BaseModel):
+    lecturer_id: int | None = Field(default=None, gt=0)
+
+
+class DepartmentSubmissionInput(BaseModel):
+    semester_id: int = Field(gt=0)
+    level: str = Field(pattern="^(100|200|300|400|500|600)$")
 
 
 class ResultInput(BaseModel):
@@ -148,9 +166,21 @@ class ResultInput(BaseModel):
 
 
 @contextmanager
-def connect():
-    """Open a short-lived PostgreSQL connection and manage its transaction."""
+def connect_primary():
+    """Always connect to the institution's primary database."""
     url = os.getenv("DATABASE_URL", DATABASE_URL)
+    if not url:
+        raise RuntimeError("DATABASE_URL is not configured.")
+    with psycopg.connect(url, row_factory=dict_row) as db:
+        yield db
+
+
+@contextmanager
+def connect():
+    """Use the isolated demo clone only for requests authenticated as demo.admin."""
+    primary_url = os.getenv("DATABASE_URL", DATABASE_URL)
+    demo_url = os.getenv("CAMPUSBOOK_DEMO_DATABASE_URL", "")
+    url = demo_url if _DEMO_DATABASE_ACTIVE.get() and demo_url else primary_url
     if not url:
         raise RuntimeError("DATABASE_URL is not configured.")
     with psycopg.connect(url, row_factory=dict_row) as db:
@@ -219,7 +249,7 @@ def get_current_user(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=401,detail="Sign in to continue.")
     with connect() as db:
         user=db.execute(
-            """SELECT u.id,u.username,u.role,u.student_id,u.lecturer_id
+            """SELECT u.id,u.username,u.role,u.student_id,u.lecturer_id,u.department_id
             FROM user_sessions s JOIN user_accounts u ON u.id=s.user_id
             WHERE s.token_hash=%s AND s.revoked_at IS NULL AND s.expires_at>%s AND u.is_active=TRUE""",
             (_session_digest(token),datetime.now(timezone.utc)),
@@ -237,7 +267,7 @@ def require_roles(user: dict[str, Any], *roles: str) -> None:
 SNAPSHOT_TABLES = (
     "faculties","departments","students","lecturers","academic_sessions","semesters",
     "courses","course_offerings","course_registrations","user_accounts","course_grades",
-    "results","activity_logs",
+    "department_result_submissions","department_result_submission_grades","results","activity_logs",
 )
 
 
@@ -284,9 +314,15 @@ def _validate_snapshot(snapshot:Any)->dict[str,list[dict[str,Any]]]:
         "results":{"id","student_id","course_code","course_title","score","semester"},
         "activity_logs":{"id","action","details","created_at"},
     }
-    if not isinstance(snapshot,dict) or snapshot.get("format_version") not in (1,2):
+    v3_required={**v2_required,
+        "semesters":v2_required["semesters"]|{"starts_on","ends_on"},
+        "user_accounts":v2_required["user_accounts"]|{"department_id"},
+        "department_result_submissions":{"id","department_id","semester_id","level","status","submitted_by","reviewed_by","submitted_at","reviewed_at","review_note"},
+        "department_result_submission_grades":{"id","submission_id","grade_id"},
+    }
+    if not isinstance(snapshot,dict) or snapshot.get("format_version") not in (1,2,3):
         raise HTTPException(status_code=422,detail="Unsupported or invalid backup format.")
-    required=v2_required if snapshot["format_version"]==2 else legacy_required
+    required=v3_required if snapshot["format_version"]==3 else (v2_required if snapshot["format_version"]==2 else legacy_required)
     tables=snapshot.get("tables")
     if not isinstance(tables,dict):
         raise HTTPException(status_code=422,detail="Backup tables are missing.")
@@ -582,9 +618,13 @@ def restore_backup(filename:str,user:dict[str,Any]=Depends(get_current_user))->d
             for row in tables["activity_logs"]:
                 db.execute("INSERT INTO activity_logs (action,details,created_at) VALUES (%s,%s,%s)",(row["action"],row["details"],row["created_at"]))
         else:
-            for table in ("course_grades","course_registrations","course_offerings","courses","semesters","academic_sessions","user_accounts","lecturers","results","students","departments","faculties","activity_logs"):
+            for table in ("department_result_submission_grades","department_result_submissions","course_grades","course_registrations","course_offerings","courses","semesters","academic_sessions","user_sessions","user_accounts","lecturers","results","students","departments","faculties","activity_logs"):
                 db.execute(sql.SQL("DELETE FROM {}").format(sql.Identifier(table)))
-            for table in ("faculties","departments","students","lecturers","academic_sessions","semesters","courses","course_offerings","course_registrations","user_accounts","course_grades","results","activity_logs"):
+            restore_order=("faculties","departments","students","lecturers","academic_sessions","semesters","courses","course_offerings","course_registrations","user_accounts","course_grades")
+            if snapshot["format_version"]==3:
+                restore_order+=("department_result_submissions","department_result_submission_grades")
+            restore_order+=("results","activity_logs")
+            for table in restore_order:
                 _insert_snapshot_rows(db,table,tables[table])
             _reset_snapshot_sequences(db)
             db.execute("UPDATE user_sessions SET revoked_at=NOW() WHERE revoked_at IS NULL")
@@ -652,50 +692,151 @@ def signup(payload:SignupInput,response:Response):
 
 @app.post("/api/auth/demo-admin")
 def demo_admin_login(response:Response):
-    """Issue a read-only public demo session for the administrator workspace."""
-    if os.getenv("CAMPUSBOOK_DEMO_ADMIN_ENABLED","").lower()!="true":
-        raise HTTPException(status_code=404,detail="Administrator demo access is disabled.")
-    with connect() as db:
-        user=db.execute("SELECT id,username,role,student_id,lecturer_id FROM user_accounts WHERE username='demo.admin' AND role='Administrator' AND is_active=TRUE").fetchone()
+    """Issue one session on the primary DB and its isolated demo clone."""
+    demo_url=os.getenv("CAMPUSBOOK_DEMO_DATABASE_URL","")
+    if os.getenv("CAMPUSBOOK_DEMO_ADMIN_ENABLED","").lower()!="true" or not demo_url:
+        raise HTTPException(status_code=404,detail="Administrator demo access is not configured.")
+    token=secrets.token_urlsafe(48)
+    now=datetime.now(timezone.utc)
+    token_hash=_session_digest(token)
+    with connect_primary() as primary:
+        user=primary.execute("SELECT id,username,role,student_id,lecturer_id FROM user_accounts WHERE username='demo.admin' AND role='Administrator' AND is_active=TRUE").fetchone()
         if not user:
             raise HTTPException(status_code=503,detail="The administrator demo account is not configured.")
-        _issue_session(db,user["id"],response)
-        log_action(db,"Demo administrator signed in","Read-only demonstration session")
+        primary.execute("INSERT INTO user_sessions (user_id,token_hash,created_at,expires_at) VALUES (%s,%s,%s,%s)",(user["id"],token_hash,now,now+timedelta(hours=SESSION_HOURS)))
+        primary.execute("INSERT INTO demo_change_requests (method,path,payload,status,created_at) VALUES ('SESSION','/api/auth/demo-admin','{}'::jsonb,'Session opened',%s)",(now,))
+    if demo_url != os.getenv("DATABASE_URL",DATABASE_URL):
+        with psycopg.connect(demo_url,row_factory=dict_row) as demo:
+            demo_user=demo.execute("SELECT id FROM user_accounts WHERE username='demo.admin' AND role='Administrator' AND is_active=TRUE").fetchone()
+            if not demo_user:
+                raise HTTPException(status_code=503,detail="The isolated demo administrator account is missing.")
+            demo.execute("INSERT INTO user_sessions (user_id,token_hash,created_at,expires_at) VALUES (%s,%s,%s,%s)",(demo_user["id"],token_hash,now,now+timedelta(hours=SESSION_HOURS)))
+    response.set_cookie("campusbook_session",token,httponly=True,secure=not bool(os.getenv("CAMPUSBOOK_TESTING")),samesite=os.getenv("CAMPUSBOOK_COOKIE_SAMESITE","lax").lower(),max_age=SESSION_HOURS*3600,path="/")
     return user
 
 
 @app.middleware("http")
 async def protect_demo_administrator(request:Request,call_next):
-    # The public demo administrator can inspect the existing admin workspace,
-    # but cannot mutate the real shared academic database.
-    if request.method in {"POST","PUT","PATCH","DELETE"} and request.url.path not in {
-        "/api/auth/login","/api/auth/logout","/api/auth/demo-admin"
-    }:
-        token=request.cookies.get("campusbook_session")
-        if token:
-            try:
-                with connect() as db:
-                    demo=db.execute(
-                        """SELECT 1 FROM user_sessions s JOIN user_accounts u ON u.id=s.user_id
-                        WHERE s.token_hash=%s AND s.revoked_at IS NULL AND s.expires_at>%s
-                        AND u.username='demo.admin' AND u.is_active=TRUE""",
-                        (_session_digest(token),datetime.now(timezone.utc))
-                    ).fetchone()
-                if demo:
-                    from fastapi.responses import JSONResponse
-                    return JSONResponse(status_code=403,content={"detail":"The public administrator demo is read-only. Sign in with an institution administrator account to make changes."})
-            except Exception:
-                # Fail closed for demo-admin writes if the identity check cannot be completed.
-                from fastapi.responses import JSONResponse
-                return JSONResponse(status_code=503,content={"detail":"Could not verify demo administrator permissions. Please retry."})
-    return await call_next(request)
+    token=request.cookies.get("campusbook_session")
+    is_demo=False
+    if token and request.url.path!="/api/auth/demo-admin":
+        try:
+            with connect_primary() as primary:
+                is_demo=bool(primary.execute(
+                    """SELECT 1 FROM user_sessions s JOIN user_accounts u ON u.id=s.user_id
+                    WHERE s.token_hash=%s AND s.revoked_at IS NULL AND s.expires_at>%s
+                    AND u.username='demo.admin' AND u.is_active=TRUE""",
+                    (_session_digest(token),datetime.now(timezone.utc))
+                ).fetchone())
+        except Exception:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=503,content={"detail":"Could not verify the demo session. Please retry."})
+    if not is_demo:
+        return await call_next(request)
+    if not os.getenv("CAMPUSBOOK_DEMO_DATABASE_URL"):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=503,content={"detail":"The isolated demo workspace is not configured."})
+    marker=_DEMO_DATABASE_ACTIVE.set(True)
+    try:
+        raw_body=await request.body()
+        async def receive():
+            return {"type":"http.request","body":raw_body,"more_body":False}
+        request._receive=receive
+        try:
+            payload=json.loads(raw_body.decode("utf-8")) if raw_body else {}
+        except Exception:
+            payload={}
+        if not isinstance(payload,dict): payload={}
+        if request.method=="DELETE" and re.fullmatch(r"/api/students/\d+",request.url.path):
+            student_id=int(request.url.path.rsplit("/",1)[1])
+            with connect() as demo_db:
+                deleted_student=demo_db.execute("SELECT matric_number,first_name,last_name,department,level,status FROM students WHERE id=%s",(student_id,)).fetchone()
+            if deleted_student: payload={"_deleted_student":dict(deleted_student)}
+        response=await call_next(request)
+        reviewable=(
+            (request.method,request.url.path) in {("POST","/api/faculties"),("POST","/api/departments"),("POST","/api/students"),("POST","/api/admin/lecturers"),("POST","/api/admin/courses"),("POST","/api/admin/course-offerings"),("POST","/api/admin/academic-sessions")}
+            or (request.method=="PUT" and re.fullmatch(r"/api/students/\d+",request.url.path))
+            or (request.method=="DELETE" and re.fullmatch(r"/api/students/\d+",request.url.path))
+            or (request.method=="PATCH" and re.fullmatch(r"/api/admin/course-offerings/\d+/lecturer",request.url.path))
+        )
+        if reviewable and response.status_code<400:
+            payload={k:("[REDACTED]" if any(secret in k.lower() for secret in ("password","token","secret")) else v) for k,v in payload.items()}
+            with connect_primary() as primary:
+                primary.execute(
+                    "INSERT INTO demo_change_requests (method,path,payload,status,created_at) VALUES (%s,%s,%s,'Pending',%s)",
+                    (request.method,request.url.path,Jsonb(payload),datetime.now(timezone.utc))
+                )
+        return response
+    finally:
+        _DEMO_DATABASE_ACTIVE.reset(marker)
 
+
+
+@app.get("/api/admin/demo-change-requests")
+def list_demo_change_requests(user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    if user.get("username")=="demo.admin": raise HTTPException(status_code=403,detail="The demo workspace cannot review its own change requests.")
+    with connect_primary() as db:
+        return db.execute("SELECT id,method,path,payload,status,created_at,reviewed_at,review_note FROM demo_change_requests WHERE status IN ('Pending','Approved','Rejected') ORDER BY created_at ASC LIMIT 200").fetchall()
+
+
+class DemoChangeReviewInput(BaseModel):
+    decision:str=Field(pattern="^(Approved|Rejected)$")
+    note:str=Field(default="",max_length=500)
+
+
+@app.post("/api/admin/demo-change-requests/{request_id}/review")
+def review_demo_change_request(request_id:int,payload:DemoChangeReviewInput,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    if user.get("username")=="demo.admin": raise HTTPException(status_code=403,detail="The demo workspace cannot review its own change requests.")
+    with connect_primary() as db:
+        change=db.execute("SELECT id,method,path,payload FROM demo_change_requests WHERE id=%s AND status='Pending'",(request_id,)).fetchone()
+    if not change: raise HTTPException(status_code=404,detail="Pending demo change request not found.")
+    if payload.decision=="Approved":
+        body=change["payload"] or {}
+        method,path=change["method"],change["path"]
+        try:
+            if method=="POST" and path=="/api/faculties": create_faculty(FacultyInput(**body),user)
+            elif method=="POST" and path=="/api/departments": create_department(DepartmentInput(**body),user)
+            elif method=="POST" and path=="/api/students": create_student(StudentInput(**body),user)
+            elif method=="PUT" and re.fullmatch(r"/api/students/\d+",path):
+                demo_id=int(path.rsplit("/",1)[1])
+                with connect_primary() as db:
+                    target=db.execute("SELECT id FROM students WHERE id=%s",(demo_id,)).fetchone()
+                    if not target: target=db.execute("SELECT id FROM students WHERE matric_number=%s",(body.get("matric_number"),)).fetchone()
+                if target: update_student(target["id"],StudentInput(**body),user)
+                else: create_student(StudentInput(**body),user)
+            elif method=="DELETE" and re.fullmatch(r"/api/students/\d+",path):
+                record=body.get("_deleted_student") or {}
+                if not record.get("matric_number"): raise HTTPException(status_code=422,detail="Deleted student details were not captured; this change cannot be applied.")
+                with connect_primary() as db:
+                    deleted=db.execute("DELETE FROM students WHERE matric_number=%s RETURNING id",(record["matric_number"],)).fetchone()
+                    if not deleted: raise HTTPException(status_code=404,detail="The student to delete no longer exists in the institution database.")
+                    log_action(db,"Student deleted by approved demo request",record["matric_number"])
+            elif method=="POST" and path=="/api/admin/lecturers": create_lecturer(LecturerInput(**body),user)
+            elif method=="POST" and path=="/api/admin/courses": create_course(CourseInput(**body),user)
+            elif method=="POST" and path=="/api/admin/course-offerings": create_course_offering(OfferingInput(**body),user)
+            elif method=="POST" and path=="/api/admin/academic-sessions": create_academic_session(AcademicSessionInput(**body),user)
+            elif method=="PATCH" and re.fullmatch(r"/api/admin/course-offerings/\d+/lecturer",path):
+                assign_offering_lecturer(int(path.split("/")[4]),LecturerAssignmentInput(**body),user)
+            else: raise HTTPException(status_code=422,detail="This demo change type is not eligible for automatic application. Reject it or make the change directly in the institution workspace.")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=409,detail=f"The change could not be applied safely: {type(exc).__name__}. The request remains pending.") from exc
+    with connect_primary() as db:
+        row=db.execute("UPDATE demo_change_requests SET status=%s,reviewed_at=%s,reviewed_by=%s,review_note=%s WHERE id=%s AND status='Pending' RETURNING id,status,reviewed_at,review_note",(payload.decision,datetime.now(timezone.utc),user["id"],payload.note.strip(),request_id)).fetchone()
+        if not row: raise HTTPException(status_code=409,detail="This request was already reviewed.")
+        log_action(db,"Demo change "+payload.decision.lower(),f"Request #{request_id}: {payload.note.strip()}")
+    return row
 
 @app.post("/api/auth/logout")
 def logout(request:Request,response:Response):
     token=request.cookies.get("campusbook_session")
     if token:
         with connect() as db: db.execute("UPDATE user_sessions SET revoked_at=%s WHERE token_hash=%s AND revoked_at IS NULL",(datetime.now(timezone.utc),_session_digest(token)))
+        if _DEMO_DATABASE_ACTIVE.get():
+            with connect_primary() as primary: primary.execute("UPDATE user_sessions SET revoked_at=%s WHERE token_hash=%s AND revoked_at IS NULL",(datetime.now(timezone.utc),_session_digest(token)))
     response.delete_cookie("campusbook_session",path="/",secure=not bool(os.getenv("CAMPUSBOOK_TESTING")),httponly=True,samesite=os.getenv("CAMPUSBOOK_COOKIE_SAMESITE","lax").lower())
     return {"logged_out":True}
 
@@ -707,14 +848,27 @@ def auth_me(user:dict[str,Any]=Depends(get_current_user)): return user
 @app.post("/api/admin/accounts",status_code=201)
 def provision_account(payload:AccountProvisionInput,user:dict[str,Any]=Depends(get_current_user)):
     require_roles(user,"Administrator")
-    if payload.role=="Student" and (payload.student_id is None or payload.lecturer_id is not None): raise HTTPException(status_code=422,detail="A student account must link to one student record.")
-    if payload.role=="Lecturer" and (payload.lecturer_id is None or payload.student_id is not None): raise HTTPException(status_code=422,detail="A lecturer account must link to one lecturer record.")
-    if payload.role=="Administrator" and (payload.student_id is not None or payload.lecturer_id is not None): raise HTTPException(status_code=422,detail="Administrator accounts cannot link to student or lecturer records.")
+    if payload.role=="Student" and (payload.student_id is None or payload.lecturer_id is not None or payload.department_id is not None): raise HTTPException(status_code=422,detail="A student account must link only to one student record.")
+    if payload.role=="Lecturer" and (payload.lecturer_id is None or payload.student_id is not None or payload.department_id is not None): raise HTTPException(status_code=422,detail="A lecturer account must link only to one lecturer record.")
+    if payload.role=="ExamsOfficer" and (payload.department_id is None or payload.student_id is not None or payload.lecturer_id is not None): raise HTTPException(status_code=422,detail="An examination officer account must be assigned to one department.")
+    if payload.role=="Administrator" and (payload.student_id is not None or payload.lecturer_id is not None or payload.department_id is not None): raise HTTPException(status_code=422,detail="Administrator accounts cannot link to academic records.")
     with connect() as db:
         try:
-            row=db.execute("INSERT INTO user_accounts (username,password_hash,role,student_id,lecturer_id) VALUES (%s,%s,%s,%s,%s) RETURNING id,username,role,student_id,lecturer_id,is_active",(payload.username.strip(),PASSWORD_HASHER.hash(payload.password),payload.role,payload.student_id,payload.lecturer_id)).fetchone()
+            row=db.execute("INSERT INTO user_accounts (username,password_hash,role,student_id,lecturer_id,department_id) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id,username,role,student_id,lecturer_id,department_id,is_active",(payload.username.strip(),PASSWORD_HASHER.hash(payload.password),payload.role,payload.student_id,payload.lecturer_id,payload.department_id)).fetchone()
         except psycopg.errors.UniqueViolation as exc: raise HTTPException(status_code=409,detail="Username or linked account already exists.") from exc
         log_action(db,"Account provisioned",f"{payload.role} account {payload.username.strip()}")
+    return row
+
+
+@app.post("/api/faculties",status_code=201)
+def create_faculty(payload:FacultyInput,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        try:
+            row=db.execute("INSERT INTO faculties (name,code) VALUES (%s,%s) RETURNING id,name,code",(payload.name.strip(),payload.code.strip().upper())).fetchone()
+        except psycopg.errors.UniqueViolation as exc:
+            raise HTTPException(status_code=409,detail="Faculty name or code already exists.") from exc
+        log_action(db,"Faculty created",payload.name.strip())
     return row
 
 
@@ -1005,24 +1159,205 @@ def create_course_offering(payload:OfferingInput,user:dict[str,Any]=Depends(get_
     return row
 
 
+@app.get("/api/admin/course-offerings")
+def list_admin_course_offerings(user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        return db.execute(
+            """SELECT o.id AS offering_id,o.lecturer_id,o.status,o.section,c.id AS course_id,
+            c.course_code,c.title AS course_title,c.level,c.credit_units,d.name AS department,
+            s.name AS semester,a.name AS academic_session,l.first_name AS lecturer_first_name,
+            l.last_name AS lecturer_last_name
+            FROM course_offerings o JOIN courses c ON c.id=o.course_id
+            JOIN departments d ON d.id=c.department_id JOIN semesters s ON s.id=o.semester_id
+            JOIN academic_sessions a ON a.id=s.academic_session_id
+            LEFT JOIN lecturers l ON l.id=o.lecturer_id
+            ORDER BY a.name DESC,s.name,d.name,c.level,c.course_code"""
+        ).fetchall()
+
+
+@app.patch("/api/admin/course-offerings/{offering_id}/lecturer")
+def assign_offering_lecturer(offering_id:int,payload:LecturerAssignmentInput,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        row=db.execute(
+            """UPDATE course_offerings SET lecturer_id=%s WHERE id=%s
+            RETURNING id,course_id,semester_id,lecturer_id,status""",
+            (payload.lecturer_id,offering_id),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404,detail="Course offering not found.")
+        log_action(db,"Course lecturer assignment changed",f"Offering {offering_id}; lecturer {payload.lecturer_id or 'unassigned'}")
+    return row
+
+
+
+@app.get("/api/exams-officer/ready-results")
+def exams_officer_ready_results(user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"ExamsOfficer")
+    with connect() as db:
+        return db.execute(
+            """SELECT s.id AS semester_id,s.name AS semester,a.name AS academic_session,
+            c.level,COUNT(DISTINCT g.id)::int AS submitted_grades,
+            COUNT(DISTINCT c.id)::int AS courses
+            FROM course_grades g
+            JOIN course_registrations cr ON cr.id=g.registration_id
+            JOIN course_offerings o ON o.id=cr.course_offering_id
+            JOIN courses c ON c.id=o.course_id
+            JOIN semesters s ON s.id=o.semester_id
+            JOIN academic_sessions a ON a.id=s.academic_session_id
+            WHERE c.department_id=%s AND g.status='Submitted'
+            GROUP BY s.id,s.name,a.name,c.level
+            ORDER BY a.name DESC,s.name,c.level""",(user["department_id"],)
+        ).fetchall()
+
+
+@app.post("/api/exams-officer/submissions",status_code=201)
+def submit_department_results(payload:DepartmentSubmissionInput,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"ExamsOfficer")
+    with connect() as db:
+        grades=db.execute(
+            """SELECT g.id FROM course_grades g
+            JOIN course_registrations cr ON cr.id=g.registration_id
+            JOIN course_offerings o ON o.id=cr.course_offering_id
+            JOIN courses c ON c.id=o.course_id
+            WHERE c.department_id=%s AND o.semester_id=%s AND c.level=%s AND g.status='Submitted'
+            ORDER BY g.id""",(user["department_id"],payload.semester_id,payload.level)
+        ).fetchall()
+        if not grades:
+            raise HTTPException(status_code=409,detail="There are no lecturer-submitted grades ready for this department, semester and level.")
+        existing=db.execute(
+            "SELECT id,status FROM department_result_submissions WHERE department_id=%s AND semester_id=%s AND level=%s",
+            (user["department_id"],payload.semester_id,payload.level)
+        ).fetchone()
+        if existing and existing["status"]!="Rejected":
+            raise HTTPException(status_code=409,detail="A departmental result submission already exists for this semester and level.")
+        if existing:
+            submission=db.execute(
+                """UPDATE department_result_submissions SET status='Submitted',submitted_by=%s,
+                reviewed_by=NULL,reviewed_at=NULL,review_note=NULL,submitted_at=NOW()
+                WHERE id=%s RETURNING id""",(user["id"],existing["id"])
+            ).fetchone()
+            db.execute("DELETE FROM department_result_submission_grades WHERE submission_id=%s",(submission["id"],))
+        else:
+            submission=db.execute(
+                """INSERT INTO department_result_submissions
+                (department_id,semester_id,level,submitted_by)
+                VALUES (%s,%s,%s,%s) RETURNING id""",
+                (user["department_id"],payload.semester_id,payload.level,user["id"])
+            ).fetchone()
+        with db.cursor() as cursor:
+            cursor.executemany(
+                "INSERT INTO department_result_submission_grades (submission_id,grade_id) VALUES (%s,%s)",
+                [(submission["id"],g["id"]) for g in grades]
+            )
+        log_action(db,"Departmental results submitted",f"Department {user['department_id']}; semester {payload.semester_id}; level {payload.level}")
+    return {"submission_id":submission["id"],"grades_submitted":len(grades),"status":"Submitted"}
+
+
+@app.get("/api/admin/department-submissions")
+def list_department_submissions(user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        return db.execute(
+            """SELECT x.id AS submission_id,f.name AS faculty_name,d.name AS department_name,
+            s.name AS semester,a.name AS academic_session,x.level,x.status,x.submitted_at,
+            COUNT(DISTINCT sg.grade_id)::int AS grades_count,
+            COUNT(DISTINCT cr.student_id)::int AS students_count,
+            COUNT(DISTINCT o.id)::int AS courses_count
+            FROM department_result_submissions x
+            JOIN departments d ON d.id=x.department_id JOIN faculties f ON f.id=d.faculty_id
+            JOIN semesters s ON s.id=x.semester_id JOIN academic_sessions a ON a.id=s.academic_session_id
+            LEFT JOIN department_result_submission_grades sg ON sg.submission_id=x.id
+            LEFT JOIN course_grades g ON g.id=sg.grade_id
+            LEFT JOIN course_registrations cr ON cr.id=g.registration_id
+            LEFT JOIN course_offerings o ON o.id=cr.course_offering_id
+            GROUP BY x.id,f.name,d.name,s.name,a.name
+            ORDER BY f.name,d.name,x.level,a.name DESC,s.name"""
+        ).fetchall()
+
+
+@app.post("/api/admin/department-submissions/{submission_id}/approve")
+def approve_department_submission(submission_id:int,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        submission=db.execute("SELECT id,status FROM department_result_submissions WHERE id=%s FOR UPDATE",(submission_id,)).fetchone()
+        if not submission:raise HTTPException(status_code=404,detail="Departmental submission not found.")
+        if submission["status"]!="Submitted":raise HTTPException(status_code=409,detail="Only submitted departmental results can be approved.")
+        changed=db.execute(
+            """UPDATE course_grades SET status='Published',approved_at=NOW(),updated_at=NOW()
+            WHERE id IN (SELECT grade_id FROM department_result_submission_grades WHERE submission_id=%s)
+            AND status='Submitted'""",(submission_id,)
+        ).rowcount
+        db.execute("UPDATE department_result_submissions SET status='Approved',reviewed_by=%s,reviewed_at=NOW() WHERE id=%s",(user["id"],submission_id))
+        log_action(db,"Departmental results approved",f"Submission {submission_id}; {changed} grades published")
+    return {"approved":True,"grades_published":changed}
+
+
+@app.post("/api/admin/department-submissions/{submission_id}/reject")
+def reject_department_submission(submission_id:int,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        submission=db.execute("SELECT id,status FROM department_result_submissions WHERE id=%s FOR UPDATE",(submission_id,)).fetchone()
+        if not submission:raise HTTPException(status_code=404,detail="Departmental submission not found.")
+        if submission["status"]!="Submitted":raise HTTPException(status_code=409,detail="Only submitted departmental results can be rejected.")
+        db.execute(
+            """UPDATE course_grades SET status='Draft',submitted_at=NULL,updated_at=NOW()
+            WHERE id IN (SELECT grade_id FROM department_result_submission_grades WHERE submission_id=%s)
+            AND status='Submitted'""",(submission_id,)
+        )
+        db.execute("UPDATE department_result_submissions SET status='Rejected',reviewed_by=%s,reviewed_at=NOW() WHERE id=%s",(user["id"],submission_id))
+        log_action(db,"Departmental results rejected",f"Submission {submission_id}")
+    return {"rejected":True}
+
+
+@app.get("/api/admin/department-results")
+def department_results(user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        return db.execute(
+            """SELECT f.id AS faculty_id,f.name AS faculty_name,
+            d.id AS department_id,d.name AS department_name,
+            c.level,st.id AS student_id,st.matric_number,st.first_name,st.last_name,
+            c.course_code,c.title AS course_title,c.credit_units,g.score,g.letter_grade,g.status AS grade_status,
+            a.name AS academic_session,s.name AS semester,
+            l.first_name AS lecturer_first_name,l.last_name AS lecturer_last_name,
+            o.id AS offering_id
+            FROM course_grades g
+            JOIN course_registrations cr ON cr.id=g.registration_id
+            JOIN students st ON st.id=cr.student_id
+            JOIN course_offerings o ON o.id=cr.course_offering_id
+            JOIN courses c ON c.id=o.course_id
+            JOIN departments d ON d.id=c.department_id
+            JOIN faculties f ON f.id=d.faculty_id
+            JOIN semesters s ON s.id=o.semester_id
+            JOIN academic_sessions a ON a.id=s.academic_session_id
+            LEFT JOIN lecturers l ON l.id=o.lecturer_id
+            WHERE g.status IN ('Submitted','Published')
+            ORDER BY f.name,d.name,c.level,st.last_name,st.first_name,c.course_code"""
+        ).fetchall()
+
+
 @app.get("/api/admin/grade-submissions")
 def grade_submissions(user:dict[str,Any]=Depends(get_current_user)):
     require_roles(user,"Administrator")
     with connect() as db:
         return db.execute(
             """SELECT o.id AS offering_id,c.course_code,c.title AS course_title,o.section,
+            c.level,d.name AS department_name,f.name AS faculty_name,
             s.name AS semester,a.name AS academic_session,
             l.first_name AS lecturer_first_name,l.last_name AS lecturer_last_name,
             COUNT(cr.id) FILTER (WHERE cr.status='Registered')::int AS roster_count,
             COUNT(g.id) FILTER (WHERE g.status='Submitted')::int AS submitted_count,
             COUNT(g.id) FILTER (WHERE g.status='Published')::int AS published_count
             FROM course_offerings o JOIN courses c ON c.id=o.course_id
+            JOIN departments d ON d.id=c.department_id JOIN faculties f ON f.id=d.faculty_id
             JOIN semesters s ON s.id=o.semester_id JOIN academic_sessions a ON a.id=s.academic_session_id
             LEFT JOIN lecturers l ON l.id=o.lecturer_id
             LEFT JOIN course_registrations cr ON cr.course_offering_id=o.id
             LEFT JOIN course_grades g ON g.registration_id=cr.id
-            GROUP BY o.id,c.course_code,c.title,o.section,s.name,a.name,l.first_name,l.last_name
-            ORDER BY a.name DESC,s.name,c.course_code"""
+            GROUP BY o.id,c.course_code,c.title,o.section,c.level,d.name,f.name,s.name,a.name,l.first_name,l.last_name
+            ORDER BY f.name,d.name,c.level,a.name DESC,s.name,c.course_code"""
         ).fetchall()
 
 
@@ -1041,10 +1376,42 @@ def create_academic_session(payload:AcademicSessionInput,user:dict[str,Any]=Depe
     with connect() as db:
         if payload.is_current:
             db.execute("UPDATE academic_sessions SET is_current=FALSE WHERE is_current=TRUE")
+        if not payload.starts_on or not payload.ends_on:
+            raise HTTPException(status_code=422,detail="Session start and end dates are required to generate the semester calendar.")
         try:
             row=db.execute("INSERT INTO academic_sessions (name,starts_on,ends_on,is_current) VALUES (%s,%s,%s,%s) RETURNING *",(payload.name.strip(),payload.starts_on,payload.ends_on,payload.is_current)).fetchone()
         except psycopg.errors.UniqueViolation as exc:
             raise HTTPException(status_code=409,detail="Academic session already exists.") from exc
+        total_days=(payload.ends_on-payload.starts_on).days+1
+        if payload.include_summer:
+            if total_days<3:
+                raise HTTPException(status_code=422,detail="The session must span at least three days to generate three semesters.")
+            first_days=total_days//3
+            second_days=total_days//3
+            first_end=payload.starts_on+timedelta(days=first_days-1)
+            second_start=first_end+timedelta(days=1)
+            second_end=second_start+timedelta(days=second_days-1)
+            calendar=[
+                ("First Semester",payload.starts_on,first_end),
+                ("Second Semester",second_start,second_end),
+                ("Summer",second_end+timedelta(days=1),payload.ends_on),
+            ]
+        else:
+            midpoint=payload.starts_on+timedelta(days=total_days//2)
+            calendar=[
+                ("First Semester",payload.starts_on,midpoint),
+                ("Second Semester",midpoint+timedelta(days=1),payload.ends_on),
+            ]
+        for semester_name,semester_start,semester_end in calendar:
+            registration_opens=datetime.combine(semester_start-timedelta(days=14),datetime.min.time(),tzinfo=timezone.utc)
+            registration_closes=datetime.combine(semester_start+timedelta(days=14),datetime.min.time(),tzinfo=timezone.utc)
+            db.execute(
+                """INSERT INTO semesters
+                (academic_session_id,name,starts_on,ends_on,registration_opens_at,registration_closes_at,is_published)
+                VALUES (%s,%s,%s,%s,%s,%s,TRUE)""",
+                (row["id"],semester_name,semester_start,semester_end,registration_opens,registration_closes),
+            )
+        log_action(db,"Academic session created",f"{row['name']} with First and Second Semester calendars")
     return row
 
 
@@ -1053,8 +1420,8 @@ def list_semesters(session_id:int|None=Query(default=None,gt=0),user:dict[str,An
     require_roles(user,"Administrator")
     with connect() as db:
         if session_id:
-            return db.execute("SELECT id,academic_session_id,name,registration_opens_at,registration_closes_at,is_published FROM semesters WHERE academic_session_id=%s ORDER BY id",(session_id,)).fetchall()
-        return db.execute("SELECT id,academic_session_id,name,registration_opens_at,registration_closes_at,is_published FROM semesters ORDER BY academic_session_id DESC,id").fetchall()
+            return db.execute("SELECT id,academic_session_id,name,starts_on,ends_on,registration_opens_at,registration_closes_at,is_published FROM semesters WHERE academic_session_id=%s ORDER BY id",(session_id,)).fetchall()
+        return db.execute("SELECT id,academic_session_id,name,starts_on,ends_on,registration_opens_at,registration_closes_at,is_published FROM semesters ORDER BY academic_session_id DESC,id").fetchall()
 
 
 @app.post("/api/admin/semesters",status_code=201)

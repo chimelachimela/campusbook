@@ -32,6 +32,7 @@ jobs:
         working-directory: backend
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/campusbook_test
+      CAMPUSBOOK_DEMO_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/campusbook_demo
       CAMPUSBOOK_AUTO_MIGRATE: "true"
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +44,7 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Create owner role required by migration defaults
         run: psql "$DATABASE_URL" -c "CREATE ROLE campusbook_owner; CREATE ROLE campusbook_app;"
+      - run: psql "$DATABASE_URL" -c "CREATE DATABASE campusbook_demo;"
       - run: pytest -v
 
   frontend:
