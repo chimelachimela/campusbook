@@ -86,7 +86,8 @@ class AdmissionApprovalInput(BaseModel):
 
 
 class DemoLoginInput(BaseModel):
-    role: str = Field(pattern="^(Student|Lecturer)$")
+    # Keep this allowlist aligned with the server-side demo account mapping below.
+    role: str = Field(pattern="^(Student|Lecturer|ExamsOfficer)$")
 
 
 class BulkCourseRegistrationInput(BaseModel):
