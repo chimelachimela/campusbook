@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS department_result_submissions (
     UNIQUE(department_id,semester_id,level)
 );
 CREATE TABLE IF NOT EXISTS department_result_submission_grades (
+    id BIGSERIAL UNIQUE,
     submission_id BIGINT NOT NULL REFERENCES department_result_submissions(id) ON DELETE CASCADE,
     grade_id BIGINT NOT NULL UNIQUE REFERENCES course_grades(id) ON DELETE RESTRICT,
     PRIMARY KEY(submission_id,grade_id)
