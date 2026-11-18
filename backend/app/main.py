@@ -81,9 +81,10 @@ class BootstrapInput(BaseModel):
 class AccountProvisionInput(BaseModel):
     username: str = Field(min_length=3, max_length=80)
     password: str = Field(min_length=12, max_length=200)
-    role: str = Field(pattern="^(Administrator|Lecturer|Student)$")
+    role: str = Field(pattern="^(Administrator|Lecturer|Student|ExamsOfficer)$")
     student_id: int | None = Field(default=None, gt=0)
     lecturer_id: int | None = Field(default=None, gt=0)
+    department_id: int | None = Field(default=None, gt=0)
 
 
 class AcademicSessionInput(BaseModel):
@@ -146,6 +147,11 @@ class DepartmentInput(BaseModel):
 
 class LecturerAssignmentInput(BaseModel):
     lecturer_id: int | None = Field(default=None, gt=0)
+
+
+class DepartmentSubmissionInput(BaseModel):
+    semester_id: int = Field(gt=0)
+    level: str = Field(pattern="^(100|200|300|400|500|600)$")
 
 
 class ResultInput(BaseModel):
@@ -228,7 +234,7 @@ def get_current_user(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=401,detail="Sign in to continue.")
     with connect() as db:
         user=db.execute(
-            """SELECT u.id,u.username,u.role,u.student_id,u.lecturer_id
+            """SELECT u.id,u.username,u.role,u.student_id,u.lecturer_id,u.department_id
             FROM user_sessions s JOIN user_accounts u ON u.id=s.user_id
             WHERE s.token_hash=%s AND s.revoked_at IS NULL AND s.expires_at>%s AND u.is_active=TRUE""",
             (_session_digest(token),datetime.now(timezone.utc)),
@@ -716,12 +722,13 @@ def auth_me(user:dict[str,Any]=Depends(get_current_user)): return user
 @app.post("/api/admin/accounts",status_code=201)
 def provision_account(payload:AccountProvisionInput,user:dict[str,Any]=Depends(get_current_user)):
     require_roles(user,"Administrator")
-    if payload.role=="Student" and (payload.student_id is None or payload.lecturer_id is not None): raise HTTPException(status_code=422,detail="A student account must link to one student record.")
-    if payload.role=="Lecturer" and (payload.lecturer_id is None or payload.student_id is not None): raise HTTPException(status_code=422,detail="A lecturer account must link to one lecturer record.")
-    if payload.role=="Administrator" and (payload.student_id is not None or payload.lecturer_id is not None): raise HTTPException(status_code=422,detail="Administrator accounts cannot link to student or lecturer records.")
+    if payload.role=="Student" and (payload.student_id is None or payload.lecturer_id is not None or payload.department_id is not None): raise HTTPException(status_code=422,detail="A student account must link only to one student record.")
+    if payload.role=="Lecturer" and (payload.lecturer_id is None or payload.student_id is not None or payload.department_id is not None): raise HTTPException(status_code=422,detail="A lecturer account must link only to one lecturer record.")
+    if payload.role=="ExamsOfficer" and (payload.department_id is None or payload.student_id is not None or payload.lecturer_id is not None): raise HTTPException(status_code=422,detail="An examination officer account must be assigned to one department.")
+    if payload.role=="Administrator" and (payload.student_id is not None or payload.lecturer_id is not None or payload.department_id is not None): raise HTTPException(status_code=422,detail="Administrator accounts cannot link to academic records.")
     with connect() as db:
         try:
-            row=db.execute("INSERT INTO user_accounts (username,password_hash,role,student_id,lecturer_id) VALUES (%s,%s,%s,%s,%s) RETURNING id,username,role,student_id,lecturer_id,is_active",(payload.username.strip(),PASSWORD_HASHER.hash(payload.password),payload.role,payload.student_id,payload.lecturer_id)).fetchone()
+            row=db.execute("INSERT INTO user_accounts (username,password_hash,role,student_id,lecturer_id,department_id) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id,username,role,student_id,lecturer_id,department_id,is_active",(payload.username.strip(),PASSWORD_HASHER.hash(payload.password),payload.role,payload.student_id,payload.lecturer_id,payload.department_id)).fetchone()
         except psycopg.errors.UniqueViolation as exc: raise HTTPException(status_code=409,detail="Username or linked account already exists.") from exc
         log_action(db,"Account provisioned",f"{payload.role} account {payload.username.strip()}")
     return row
