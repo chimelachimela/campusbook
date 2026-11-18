@@ -158,6 +158,19 @@ def test_backup_restore_round_trip_and_safety_snapshot():
 
 
 
+
+def test_academic_session_generates_semester_calendar_and_registration_windows():
+    response=client.post("/api/admin/academic-sessions",json={
+        "name":"2028/2029","starts_on":"2028-09-01","ends_on":"2029-06-30",
+        "is_current":True,"include_summer":True,
+    })
+    assert response.status_code==201
+    semesters=client.get("/api/admin/semesters").json()
+    generated=[x for x in semesters if x["academic_session_id"]==response.json()["id"]]
+    assert [x["name"] for x in generated]==["First Semester","Second Semester","Summer"]
+    assert all(x["starts_on"] and x["ends_on"] and x["registration_opens_at"] and x["registration_closes_at"] for x in generated)
+
+
 def test_department_examination_officer_submits_and_admin_approves_department_results():
     student=client.post("/api/students",json=student_payload("DE/2023/0201")).json()
     with main.connect() as db:
