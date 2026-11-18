@@ -92,6 +92,7 @@ class AcademicSessionInput(BaseModel):
     starts_on: date | None = None
     ends_on: date | None = None
     is_current: bool = False
+    include_summer: bool = False
 
 
 class SemesterInput(BaseModel):
@@ -1267,11 +1268,25 @@ def create_academic_session(payload:AcademicSessionInput,user:dict[str,Any]=Depe
         except psycopg.errors.UniqueViolation as exc:
             raise HTTPException(status_code=409,detail="Academic session already exists.") from exc
         total_days=(payload.ends_on-payload.starts_on).days+1
-        midpoint=payload.starts_on+timedelta(days=total_days//2)
-        calendar=[
-            ("First Semester",payload.starts_on,midpoint),
-            ("Second Semester",midpoint+timedelta(days=1),payload.ends_on),
-        ]
+        if payload.include_summer:
+            if total_days<3:
+                raise HTTPException(status_code=422,detail="The session must span at least three days to generate three semesters.")
+            first_days=total_days//3
+            second_days=total_days//3
+            first_end=payload.starts_on+timedelta(days=first_days-1)
+            second_start=first_end+timedelta(days=1)
+            second_end=second_start+timedelta(days=second_days-1)
+            calendar=[
+                ("First Semester",payload.starts_on,first_end),
+                ("Second Semester",second_start,second_end),
+                ("Summer",second_end+timedelta(days=1),payload.ends_on),
+            ]
+        else:
+            midpoint=payload.starts_on+timedelta(days=total_days//2)
+            calendar=[
+                ("First Semester",payload.starts_on,midpoint),
+                ("Second Semester",midpoint+timedelta(days=1),payload.ends_on),
+            ]
         for semester_name,semester_start,semester_end in calendar:
             registration_opens=datetime.combine(semester_start-timedelta(days=14),datetime.min.time(),tzinfo=timezone.utc)
             registration_closes=datetime.combine(semester_start+timedelta(days=14),datetime.min.time(),tzinfo=timezone.utc)
