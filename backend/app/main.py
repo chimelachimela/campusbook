@@ -705,11 +705,12 @@ def demo_admin_login(response:Response):
             raise HTTPException(status_code=503,detail="The administrator demo account is not configured.")
         primary.execute("INSERT INTO user_sessions (user_id,token_hash,created_at,expires_at) VALUES (%s,%s,%s,%s)",(user["id"],token_hash,now,now+timedelta(hours=SESSION_HOURS)))
         primary.execute("INSERT INTO demo_change_requests (method,path,payload,status,created_at) VALUES ('SESSION','/api/auth/demo-admin','{}'::jsonb,'Session opened',%s)",(now,))
-    with psycopg.connect(demo_url,row_factory=dict_row) as demo:
-        demo_user=demo.execute("SELECT id FROM user_accounts WHERE username='demo.admin' AND role='Administrator' AND is_active=TRUE").fetchone()
-        if not demo_user:
-            raise HTTPException(status_code=503,detail="The isolated demo administrator account is missing.")
-        demo.execute("INSERT INTO user_sessions (user_id,token_hash,created_at,expires_at) VALUES (%s,%s,%s,%s)",(demo_user["id"],token_hash,now,now+timedelta(hours=SESSION_HOURS)))
+    if demo_url != os.getenv("DATABASE_URL",DATABASE_URL):
+        with psycopg.connect(demo_url,row_factory=dict_row) as demo:
+            demo_user=demo.execute("SELECT id FROM user_accounts WHERE username='demo.admin' AND role='Administrator' AND is_active=TRUE").fetchone()
+            if not demo_user:
+                raise HTTPException(status_code=503,detail="The isolated demo administrator account is missing.")
+            demo.execute("INSERT INTO user_sessions (user_id,token_hash,created_at,expires_at) VALUES (%s,%s,%s,%s)",(demo_user["id"],token_hash,now,now+timedelta(hours=SESSION_HOURS)))
     response.set_cookie("campusbook_session",token,httponly=True,secure=not bool(os.getenv("CAMPUSBOOK_TESTING")),samesite=os.getenv("CAMPUSBOOK_COOKIE_SAMESITE","lax").lower(),max_age=SESSION_HOURS*3600,path="/")
     return user
 
