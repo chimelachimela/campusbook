@@ -1306,7 +1306,7 @@ def list_semesters(session_id:int|None=Query(default=None,gt=0),user:dict[str,An
     with connect() as db:
         if session_id:
             return db.execute("SELECT id,academic_session_id,name,starts_on,ends_on,registration_opens_at,registration_closes_at,is_published FROM semesters WHERE academic_session_id=%s ORDER BY id",(session_id,)).fetchall()
-        return db.execute("SELECT id,academic_session_id,name,registration_opens_at,registration_closes_at,is_published FROM semesters ORDER BY academic_session_id DESC,id").fetchall()
+        return db.execute("SELECT id,academic_session_id,name,starts_on,ends_on,registration_opens_at,registration_closes_at,is_published FROM semesters ORDER BY academic_session_id DESC,id").fetchall()
 
 
 @app.post("/api/admin/semesters",status_code=201)
