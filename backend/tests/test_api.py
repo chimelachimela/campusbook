@@ -20,7 +20,7 @@ def clean_database(monkeypatch):
     client.cookies.clear()
     with main.connect() as db:
         db.execute("""TRUNCATE TABLE
-            course_grades,course_registrations,course_offerings,courses,semesters,academic_sessions,
+            department_result_submission_grades,department_result_submissions,course_grades,course_registrations,course_offerings,courses,semesters,academic_sessions,
             user_sessions,user_accounts,lecturers,results,students,activity_logs,backup_snapshots,
             departments,faculties RESTART IDENTITY CASCADE""")
         faculties = [
@@ -155,6 +155,41 @@ def test_backup_restore_round_trip_and_safety_snapshot():
     assert len(client.get("/api/results").json()) == 1
     assert restored.json()["safety_backup"].endswith(".json")
     assert len(client.get("/api/backups").json()) == 2
+
+
+
+def test_department_examination_officer_submits_and_admin_approves_department_results():
+    student=client.post("/api/students",json=student_payload("DE/2023/0201")).json()
+    with main.connect() as db:
+        department_id=db.execute("SELECT id FROM departments WHERE code='CPE'").fetchone()["id"]
+        session_id=db.execute("INSERT INTO academic_sessions (name,is_current) VALUES ('2027/2028',TRUE) RETURNING id").fetchone()["id"]
+        semester_id=db.execute("INSERT INTO semesters (academic_session_id,name,is_published) VALUES (%s,'First Semester',TRUE) RETURNING id",(session_id,)).fetchone()["id"]
+    lecturer=client.post("/api/admin/lecturers",json={"staff_number":"STAFF-EXAM-001","first_name":"Grace","last_name":"Eze","department_id":department_id}).json()
+    course=client.post("/api/admin/courses",json={"department_id":department_id,"course_code":"CPE401","title":"Networks","credit_units":3,"level":"300"}).json()
+    offering=client.post("/api/admin/course-offerings",json={"course_id":course["id"],"semester_id":semester_id,"lecturer_id":lecturer["id"]}).json()
+    client.post("/api/admin/accounts",json={"username":"examstudent","password":"test-student-password-123","role":"Student","student_id":student["id"]})
+    client.post("/api/admin/accounts",json={"username":"examlecturer","password":"test-lecturer-password-123","role":"Lecturer","lecturer_id":lecturer["id"]})
+    officer=client.post("/api/admin/accounts",json={"username":"examofficer","password":"test-officer-password-123","role":"ExamsOfficer","department_id":department_id})
+    assert officer.status_code==201 and officer.json()["role"]=="ExamsOfficer"
+    assert login("examstudent","test-student-password-123").status_code==200
+    assert client.post(f"/api/student/course-offerings/{offering['id']}/register").status_code==201
+    assert login("examlecturer","test-lecturer-password-123").status_code==200
+    assert client.put(f"/api/lecturer/offerings/{offering['id']}/grades",json={"grades":[{"student_id":student["id"],"score":91}]}).status_code==200
+    assert client.post(f"/api/lecturer/offerings/{offering['id']}/submit").status_code==200
+    assert login("examofficer","test-officer-password-123").status_code==200
+    ready=client.get("/api/exams-officer/ready-results")
+    assert ready.status_code==200 and ready.json()[0]["submitted_grades"]==1
+    submitted=client.post("/api/exams-officer/submissions",json={"semester_id":semester_id,"level":"300"})
+    assert submitted.status_code==201 and submitted.json()["grades_submitted"]==1
+    assert client.get("/api/admin/department-submissions").status_code==403
+    assert login().status_code==200
+    queue=client.get("/api/admin/department-submissions")
+    assert queue.status_code==200 and queue.json()[0]["status"]=="Submitted"
+    approved=client.post(f"/api/admin/department-submissions/{submitted.json()['submission_id']}/approve")
+    assert approved.status_code==200 and approved.json()["grades_published"]==1
+    assert client.get("/api/department-results").status_code==200
+    assert login("examstudent","test-student-password-123").status_code==200
+    assert client.get("/api/student/results").json()[0]["score"]==91
 
 
 def test_backup_validation_and_filename_guard():
