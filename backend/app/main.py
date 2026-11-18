@@ -1058,6 +1058,33 @@ def assign_offering_lecturer(offering_id:int,payload:LecturerAssignmentInput,use
     return row
 
 
+@app.get("/api/admin/department-results")
+def department_results(user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        return db.execute(
+            """SELECT f.id AS faculty_id,f.name AS faculty_name,
+            d.id AS department_id,d.name AS department_name,
+            c.level,st.id AS student_id,st.matric_number,st.first_name,st.last_name,
+            c.course_code,c.title AS course_title,c.credit_units,g.score,g.letter_grade,g.status AS grade_status,
+            a.name AS academic_session,s.name AS semester,
+            l.first_name AS lecturer_first_name,l.last_name AS lecturer_last_name,
+            o.id AS offering_id
+            FROM course_grades g
+            JOIN course_registrations cr ON cr.id=g.registration_id
+            JOIN students st ON st.id=cr.student_id
+            JOIN course_offerings o ON o.id=cr.course_offering_id
+            JOIN courses c ON c.id=o.course_id
+            JOIN departments d ON d.id=c.department_id
+            JOIN faculties f ON f.id=d.faculty_id
+            JOIN semesters s ON s.id=o.semester_id
+            JOIN academic_sessions a ON a.id=s.academic_session_id
+            LEFT JOIN lecturers l ON l.id=o.lecturer_id
+            WHERE g.status IN ('Submitted','Published')
+            ORDER BY f.name,d.name,c.level,st.last_name,st.first_name,c.course_code"""
+        ).fetchall()
+
+
 @app.get("/api/admin/grade-submissions")
 def grade_submissions(user:dict[str,Any]=Depends(get_current_user)):
     require_roles(user,"Administrator")
