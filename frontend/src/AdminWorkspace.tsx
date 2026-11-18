@@ -52,12 +52,12 @@ export default function AdminWorkspace({user,onLogout}:{user:User;onLogout:()=>v
  const select=(label:string,value:string,onChange:(v:string)=>void,options:{value:string;label:string}[],placeholder:string)=><label className={field}>{label}<select value={value} onChange={e=>onChange(e.target.value)}><option value="">{placeholder}</option>{options.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</select></label>;
  return <div className="admin-v2-shell">
   <aside className="admin-v2-sidebar"><div className="admin-v2-brand"><span className="admin-v2-mark"><GraduationCap size={19}/></span>campus<span>book</span></div><div className="admin-v2-institution"><b>Rivers State University</b><small>Academic records</small></div><div className="admin-v2-label">WORKSPACE</div>
-   <button className={'admin-nav-item '+(page==='Overview'?'active':'')} onClick={()=>go('Overview')}><LayoutDashboard size={17}/>Overview</button>
-   <button className={'admin-nav-item '+(page==='Academic Setup'?'active':'')} onClick={()=>{setSetupOpen(v=>!v);go('Academic Setup');}}><Layers3 size={17}/>Academic Setup{setupOpen?<ChevronDown size={15}/>:<ChevronRight size={15}/>}</button>
+   <button className={'admin-nav-item '+(page==='Overview'?'active':'')} onClick={()=>go('Overview')}><LayoutDashboard size={17}/><span>Overview</span></button>
+   <button className={'admin-nav-item '+(page==='Academic Setup'?'active':'')} onClick={()=>{setSetupOpen(v=>!v);go('Academic Setup');}}><Layers3 size={17}/><span>Academic Setup</span>{setupOpen?<ChevronDown size={15}/>:<ChevronRight size={15}/>}</button>
    {setupOpen&&<div className="admin-subnav">{sections.map((s,i)=><button key={s} className={page==='Academic Setup'&&setup===s?'active':''} onClick={()=>go('Academic Setup',s)}>{s}</button>)}</div>}
-   <button className={'admin-nav-item '+(page==='Results'?'active':'')} onClick={()=>go('Results')}><BookOpen size={17}/>Results</button>
-   <button className={'admin-nav-item '+(page==='Backup & Recovery'?'active':'')} onClick={()=>go('Backup & Recovery')}><Database size={17}/>Backup & Recovery</button>
-   <button className={'admin-nav-item '+(page==='Activity Log'?'active':'')} onClick={()=>go('Activity Log')}><Activity size={17}/>Activity Log</button>
+   <button className={'admin-nav-item '+(page==='Results'?'active':'')} onClick={()=>go('Results')}><BookOpen size={17}/><span>Results</span></button>
+   <button className={'admin-nav-item '+(page==='Backup & Recovery'?'active':'')} onClick={()=>go('Backup & Recovery')}><Database size={17}/><span>Backup &amp; Recovery</span></button>
+   <button className={'admin-nav-item '+(page==='Activity Log'?'active':'')} onClick={()=>go('Activity Log')}><Activity size={17}/><span>Activity Log</span></button>
    <div className="admin-v2-profile"><div className="admin-v2-avatar">AD</div><div><b>{user.username}</b><small>Administrator</small></div></div>
   </aside>
   <main className="admin-v2-main"><header className="admin-v2-topbar"><div><span>Workspace</span><ChevronRight size={14}/><b>{page==='Academic Setup'?setup:page}</b></div><div><button className="admin-v2-refresh" onClick={()=>void load()}><RefreshCw size={15}/> Refresh</button><button className="admin-v2-signout" onClick={onLogout}>Sign out</button></div></header><div className="admin-v2-content">

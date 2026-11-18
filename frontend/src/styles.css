@@ -170,7 +170,7 @@ td{color:#35435a;font-size:12px}
 /* Keep every admin navigation label and nested setup item aligned to the left. */
 .admin-v2-sidebar{align-items:stretch;text-align:left}
 .admin-v2-sidebar>.admin-nav-item{justify-content:flex-start;text-align:left}
-.admin-v2-sidebar>.admin-nav-item>span{margin-left:auto}
+.admin-v2-sidebar>.admin-nav-item>span{margin-left:0;flex:1;text-align:left}
 .admin-subnav{align-items:stretch;text-align:left}
 .admin-subnav button{width:100%;text-align:left;justify-content:flex-start}
 .exam-gradebook-toolbar,.exam-submit-bar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:16px 0;flex-wrap:wrap}
