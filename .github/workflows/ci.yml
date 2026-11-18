@@ -32,6 +32,7 @@ jobs:
         working-directory: backend
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/campusbook_test
+      CAMPUSBOOK_DEMO_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/campusbook_demo
       CAMPUSBOOK_AUTO_MIGRATE: "true"
     steps:
       - uses: actions/checkout@v4
