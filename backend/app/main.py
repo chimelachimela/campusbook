@@ -777,7 +777,7 @@ def list_demo_change_requests(user:dict[str,Any]=Depends(get_current_user)):
     require_roles(user,"Administrator")
     if user.get("username")=="demo.admin": raise HTTPException(status_code=403,detail="The demo workspace cannot review its own change requests.")
     with connect_primary() as db:
-        return db.execute("SELECT id,method,path,payload,status,created_at,reviewed_at,review_note FROM demo_change_requests WHERE status IN ('Pending','Approved','Rejected') ORDER BY created_at DESC LIMIT 200").fetchall()
+        return db.execute("SELECT id,method,path,payload,status,created_at,reviewed_at,review_note FROM demo_change_requests WHERE status IN ('Pending','Approved','Rejected') ORDER BY created_at ASC LIMIT 200").fetchall()
 
 
 class DemoChangeReviewInput(BaseModel):
