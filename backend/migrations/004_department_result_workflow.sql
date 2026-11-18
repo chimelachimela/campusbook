@@ -4,6 +4,7 @@ ALTER TABLE user_accounts DROP CONSTRAINT IF EXISTS user_accounts_role_check;
 ALTER TABLE user_accounts ADD CONSTRAINT user_accounts_role_check
     CHECK (role IN ('Administrator','Lecturer','Student','ExamsOfficer'));
 ALTER TABLE user_accounts DROP CONSTRAINT IF EXISTS user_accounts_check;
+ALTER TABLE user_accounts DROP CONSTRAINT IF EXISTS user_accounts_identity_check;
 ALTER TABLE user_accounts ADD CONSTRAINT user_accounts_identity_check CHECK (
     (role='Administrator' AND student_id IS NULL AND lecturer_id IS NULL AND department_id IS NULL) OR
     (role='Student' AND student_id IS NOT NULL AND lecturer_id IS NULL AND department_id IS NULL) OR
