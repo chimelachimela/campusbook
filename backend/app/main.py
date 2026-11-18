@@ -71,6 +71,20 @@ class SignupInput(BaseModel):
     identity_number: str = Field(min_length=2,max_length=40)
 
 
+class AdmissionApplicationInput(BaseModel):
+    email: str = Field(min_length=6,max_length=160,pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    password: str = Field(min_length=8,max_length=200)
+    first_name: str = Field(min_length=1,max_length=80)
+    last_name: str = Field(min_length=1,max_length=80)
+    department_id: int = Field(gt=0)
+    application_reference: str | None = Field(default=None,max_length=80)
+
+
+class AdmissionApprovalInput(BaseModel):
+    matric_number: str = Field(min_length=2,max_length=40)
+    level: str = Field(pattern="^(100|200|300|400|500|600)$")
+
+
 class DemoLoginInput(BaseModel):
     role: str = Field(pattern="^(Student|Lecturer)$")
 
@@ -692,6 +706,102 @@ def signup(payload:SignupInput,response:Response):
         _issue_session(db,account["id"],response)
         log_action(db,"Self-service account created",f"{payload.role} account {email}")
     return account
+
+
+@app.get("/api/public/departments")
+def public_departments():
+    with connect_primary() as db:
+        return db.execute(
+            "SELECT d.id,d.name,d.code,f.name AS faculty_name FROM departments d JOIN faculties f ON f.id=d.faculty_id ORDER BY f.name,d.name"
+        ).fetchall()
+
+
+@app.post("/api/auth/apply",status_code=202)
+def submit_admission_application(payload:AdmissionApplicationInput):
+    email=payload.email.strip().lower()
+    with connect_primary() as db:
+        if db.execute("SELECT 1 FROM user_accounts WHERE LOWER(username)=LOWER(%s)",(email,)).fetchone():
+            raise HTTPException(status_code=409,detail="An account already exists for this email. Sign in instead.")
+        if not db.execute("SELECT id FROM departments WHERE id=%s",(payload.department_id,)).fetchone():
+            raise HTTPException(status_code=404,detail="Select a valid department.")
+        try:
+            row=db.execute(
+                """INSERT INTO admission_applications
+                (email,password_hash,first_name,last_name,department_id,application_reference)
+                VALUES (%s,%s,%s,%s,%s,%s)
+                RETURNING id,status,created_at""",
+                (email,PASSWORD_HASHER.hash(payload.password),payload.first_name.strip(),payload.last_name.strip(),
+                 payload.department_id,payload.application_reference.strip() if payload.application_reference else None)
+            ).fetchone()
+        except psycopg.errors.UniqueViolation as exc:
+            raise HTTPException(status_code=409,detail="An application for this email is already awaiting review.") from exc
+        log_action(db,"Admission application received",f"New student applicant {email}")
+    return {"application_id":row["id"],"status":row["status"],"created_at":row["created_at"]}
+
+
+@app.get("/api/admin/admission-applications")
+def list_admission_applications(user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        return db.execute(
+            """SELECT a.id,a.email,a.first_name,a.last_name,a.application_reference,a.status,a.created_at,
+            d.id AS department_id,d.name AS department,f.name AS faculty
+            FROM admission_applications a JOIN departments d ON d.id=a.department_id
+            JOIN faculties f ON f.id=d.faculty_id
+            WHERE a.status='Pending' ORDER BY a.created_at ASC"""
+        ).fetchall()
+
+
+@app.post("/api/admin/admission-applications/{application_id}/approve")
+def approve_admission_application(application_id:int,payload:AdmissionApprovalInput,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    matric=payload.matric_number.strip().upper()
+    if not re.fullmatch(r"DE/[0-9]{4}/[0-9]{4}",matric):
+        raise HTTPException(status_code=422,detail="Matriculation number must follow DE/YYYY/NNNN, for example DE/2023/0001.")
+    with connect() as db:
+        application=db.execute(
+            "SELECT * FROM admission_applications WHERE id=%s FOR UPDATE",(application_id,)
+        ).fetchone()
+        if not application:raise HTTPException(status_code=404,detail="Admission application not found.")
+        if application["status"]!="Pending":raise HTTPException(status_code=409,detail="This application has already been reviewed.")
+        if db.execute("SELECT 1 FROM user_accounts WHERE LOWER(username)=LOWER(%s)",(application["email"],)).fetchone():
+            raise HTTPException(status_code=409,detail="An account already exists for this applicant email.")
+        department=db.execute("SELECT id,name FROM departments WHERE id=%s",(application["department_id"],)).fetchone()
+        try:
+            student=db.execute(
+                """INSERT INTO students
+                (matric_number,first_name,last_name,email,department,department_id,level,status,created_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,'Active',%s) RETURNING id,matric_number,first_name,last_name,department,level""",
+                (matric,application["first_name"],application["last_name"],application["email"],
+                 department["name"],department["id"],payload.level,datetime.now(timezone.utc))
+            ).fetchone()
+            account=db.execute(
+                """INSERT INTO user_accounts (username,password_hash,role,student_id)
+                VALUES (%s,%s,'Student',%s) RETURNING id,username,role,student_id""",
+                (application["email"],application["password_hash"],student["id"])
+            ).fetchone()
+        except psycopg.errors.UniqueViolation as exc:
+            raise HTTPException(status_code=409,detail="That matriculation number or applicant account is already in use.") from exc
+        db.execute(
+            """UPDATE admission_applications SET status='Approved',reviewed_at=NOW(),
+            reviewed_by=%s,student_id=%s WHERE id=%s""",
+            (user["id"],student["id"],application_id)
+        )
+        log_action(db,"Admission application approved",f"{application['email']} assigned matriculation number {matric}")
+    return {"approved":True,"student":student,"account":account}
+
+
+@app.post("/api/admin/admission-applications/{application_id}/reject")
+def reject_admission_application(application_id:int,user:dict[str,Any]=Depends(get_current_user)):
+    require_roles(user,"Administrator")
+    with connect() as db:
+        row=db.execute(
+            """UPDATE admission_applications SET status='Rejected',reviewed_at=NOW(),reviewed_by=%s
+            WHERE id=%s AND status='Pending' RETURNING id""",(user["id"],application_id)
+        ).fetchone()
+        if not row:raise HTTPException(status_code=404,detail="Pending admission application not found.")
+        log_action(db,"Admission application rejected",f"Application {application_id}")
+    return {"rejected":True}
 
 
 def _issue_demo_session(username:str,role:str,response:Response):
