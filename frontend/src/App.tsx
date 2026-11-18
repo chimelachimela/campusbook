@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import AdminWorkspace from './AdminWorkspace';
+import ExamsOfficerPortal from './ExamsOfficerPortal';
 import {
   Activity, ArrowDownToLine, BookOpen, Building2, Check, Menu,
   ChevronRight, Database, GraduationCap, LayoutDashboard,
@@ -10,7 +11,7 @@ import {
 
 const API = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http://localhost:8000');
 const demoMode = import.meta.env.VITE_DEMO_MODE === 'true';
-type AuthUser={id:number;username:string;role:'Administrator'|'Lecturer'|'Student';student_id:number|null;lecturer_id:number|null};
+type AuthUser={id:number;username:string;role:'Administrator'|'Lecturer'|'Student'|'ExamsOfficer';student_id:number|null;lecturer_id:number|null};
 type Offering={id:number;course_code:string;course_title:string;credit_units:number;level:string;department:string;semester:string;academic_session:string;section:string;status:string};
 type RosterRow={student_id:number;matric_number:string;first_name:string;last_name:string;score:number|null;grade_status:string|null};
 type Student = {
@@ -250,6 +251,7 @@ export default function App(){
   if(user.role==='Administrator'&&error&&!dashboard)return <div className="auth-screen"><div className="auth-card"><div className="portal-brand"><div className="brand-mark"><GraduationCap size={21}/></div><span>campus<span className="brand-light">book</span></span></div><h1>Records service unavailable</h1><p className="auth-description">{error}</p><p className="auth-description">CampusBook has not replaced your records with zeroes. It will show the dashboard once it can retrieve the data.</p><button className="primary-button" onClick={()=>void refresh()}>Reconnect</button></div></div>;
   if(user.role==='Student')return <StudentPortal user={user} onLogout={()=>void signOut()}/>;
   if(user.role==='Lecturer')return <LecturerPortal user={user} onLogout={()=>void signOut()}/>;
+  if(user.role==='ExamsOfficer')return <ExamsOfficerPortal user={user} onLogout={()=>void signOut()}/>;
   return <AdminWorkspace user={user} onLogout={()=>void signOut()}/>;
 }
 
