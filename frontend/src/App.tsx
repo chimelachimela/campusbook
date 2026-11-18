@@ -13,7 +13,7 @@ const API = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : 'http:/
 const demoMode = import.meta.env.VITE_DEMO_MODE === 'true';
 type AuthUser={id:number;username:string;role:'Administrator'|'Lecturer'|'Student'|'ExamsOfficer';student_id:number|null;lecturer_id:number|null};
 type Offering={id:number;course_code:string;course_title:string;credit_units:number;level:string;department:string;semester:string;academic_session:string;section:string;status:string};
-type RosterRow={student_id:number;matric_number:string;first_name:string;last_name:string;score:number|null;grade_status:string|null};
+type RosterRow={student_id:number;matric_number:string;first_name:string;last_name:string;score:number|null;grade_status:string|null;registration_status?:string|null};
 type Student = {
   id:number; matric_number:string; first_name:string; last_name:string;
   department:string; department_id:number; faculty:string; level:string; status:string; created_at:string;
